@@ -1,0 +1,7 @@
+[Unit]
+Description=Run the proposed migration script
+
+[Service]
+Type=oneshot
+Environment="PATH={{ archive_scripts_location }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin"
+ExecStart=run-pm-notest

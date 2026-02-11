@@ -1,0 +1,15 @@
+name: ubuntu-proposed-migration-operator
+type: charm
+summary: A charm to run Ubuntu proposed-migration tasks
+description: A charm to run Ubuntu proposed-migration tasks
+
+base: ubuntu@24.04
+platforms:
+  amd64:
+    build-on: [amd64]
+    build-for: [amd64]
+
+parts:
+  charm:
+    plugin: charm
+    source: .

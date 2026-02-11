@@ -1,0 +1,8 @@
+[Unit]
+Description=Run the proposed migration script (timer)
+
+[Timer]
+OnCalendar=*-*-* *:07,37:00
+
+[Install]
+WantedBy=timers.target
