@@ -22,12 +22,12 @@ class ProposedMigrationCharm(ops.CharmBase):
         framework.observe(self.on.install, self._on_install)
         framework.observe(self.on.config_changed, self._on_config_changed)
         framework.observe(self.on.start, self._on_start)
-        framework.observe(self.on.upgrade_charm, self._on_install)
 
     def _on_install(self, event: ops.InstallEvent):
         """Install the workload on the machine."""
         self.unit.status = ops.MaintenanceStatus("installing workload")
         proposed_migration.install()
+        self._stored.installed = True
 
     def _on_start(self, event: ops.StartEvent):
         """Start the workload on the machine."""
