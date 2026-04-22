@@ -108,8 +108,9 @@ def create_directories():
         CODE_PATH,
         PUBLIC_HTML_PATH
     ]:
-        directory.mkdir(exist_ok=True, parents=True)
-        shutil.chown(directory, USER, USER)
+        # use run_as_user instead of Path.mkdir
+        # for appropriate permissions
+        run_as_user(f"mkdir -p {directory}")
 
 def clone_repositories():
     logger.info("cloning repositories")
