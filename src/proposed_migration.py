@@ -14,14 +14,11 @@ from charmlibs import apt, systemd
 
 logger = logging.getLogger(__name__)
 
-USER = "ubuntu-archive"
+USER = "ubuntu"
 
-# NOTE: because the ubuntu-archive user does not exist upon initializing the machine,
-#       the home directory must be specified explicitly. expanduser() does *not* work
-
-PROPOSED_MIGRATION_PATH = Path(f"/home/{USER}/proposed-migration")
+PROPOSED_MIGRATION_PATH = Path(f"~{USER}/proposed-migration").expanduser()
 CODE_PATH = PROPOSED_MIGRATION_PATH / "code"
-PUBLIC_HTML_PATH = Path(f"/home/{USER}/public_html")
+PUBLIC_HTML_PATH = Path(f"~{USER}/public_html").expanduser()
 
 UBUNTU_ARCHIVE_SCRIPTS_REPO = "https://git.launchpad.net/ubuntu-archive-scripts"
 UBUNTU_ARCHIVE_SCRIPTS_LOCATION = Path(f"/home/{USER}/ubuntu-archive-scripts")
@@ -169,7 +166,6 @@ def install_proxy():
 def install():
     """Install proposed migration charm."""
     install_proxy()
-    create_user()
     logger.info("updating package index")
     apt.update()
     logger.info("installing packages")
