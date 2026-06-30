@@ -131,23 +131,24 @@ def clone_repositories():
         run_as_user(f"git clone --depth 1 --branch '{branch}' '{repo}' '{location}'")
 
 def install_proxy():
-    if is_proxy_defined():
-        logger.info("installing proxy environment file")
-        Path("/etc/environment.d").mkdir(exist_ok=True)
-        with open("/etc/environment.d/proxy.conf", "w") as file:
-            file.write(
-                dedent(
-                    f"""\
-                    http_proxy={os.getenv("JUJU_CHARM_HTTP_PROXY", "")}
-                    https_proxy={os.getenv("JUJU_CHARM_HTTPS_PROXY", "")}
-                    no_proxy={os.getenv("JUJU_CHARM_NO_PROXY", "")}
-                    """
-                )
+    if not is_proxy_defined():
+        return
+    logger.info("installing proxy environment file")
+    Path("/etc/environment.d").mkdir(exist_ok=True)
+    with open("/etc/environment.d/proxy.conf", "w") as file:
+        file.write(
+            dedent(
+                f"""\
+                http_proxy={os.getenv("JUJU_CHARM_HTTP_PROXY", "")}
+                https_proxy={os.getenv("JUJU_CHARM_HTTPS_PROXY", "")}
+                no_proxy={os.getenv("JUJU_CHARM_NO_PROXY", "")}
+                """
             )
-        
-        os.environ["http_proxy"] = os.getenv("JUJU_CHARM_HTTP_PROXY", "")
-        os.environ["https_proxy"] = os.getenv("JUJU_CHARM_HTTPS_PROXY", "")
-        os.environ["no_proxy"] = os.getenv("JUJU_CHARM_NO_PROXY", "")
+        )
+
+    os.environ["http_proxy"] = os.getenv("JUJU_CHARM_HTTP_PROXY", "")
+    os.environ["https_proxy"] = os.getenv("JUJU_CHARM_HTTPS_PROXY", "")
+    os.environ["no_proxy"] = os.getenv("JUJU_CHARM_NO_PROXY", "")
 
 def install():
     """Install proposed migration charm."""
