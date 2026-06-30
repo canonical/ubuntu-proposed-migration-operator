@@ -1,0 +1,23 @@
+#! /bin/sh
+set -e
+
+DEFAULT_SERIES=stonking
+
+export SERIES="${SERIES:-$DEFAULT_SERIES}"
+
+cd "$HOME/proposed-migration"
+[ -e STOP ] && exit 0
+if ! lockfile -r0 ".run-proposed-migration-ubuntu-$SERIES-notest.lock"; then
+	exit 1
+fi
+
+cleanup () {
+    rm -f $HOME/proposed-migration/.run-proposed-migration-ubuntu-$SERIES-notest.lock
+    [ -n "$tmpdir" ] && rm -rf "$tmpdir"
+}
+trap cleanup EXIT HUP INT QUIT TERM
+
+logfile="log/$SERIES/$(date -u +%F/%T).notest.log"
+mkdir -p "${logfile%/*}"
+
+code/b1/britney run_notest >"$logfile" 2>&1

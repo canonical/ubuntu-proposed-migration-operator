@@ -1,0 +1,178 @@
+#! /bin/sh
+set -e
+
+LOCK=
+mtimes=
+cleanup () {
+	[ "$mtimes" ] && rm -rf "$mtimes"
+	[ "$LOCK" ] && rm -f "$LOCK"
+}
+trap cleanup EXIT HUP INT QUIT TERM
+
+if [ -t 1 ]; then
+	REDIR=
+else
+	REDIR='>/dev/null 2>&1'
+fi
+
+LOCK="$HOME/.archive-reports.lock"
+if ! eval lockfile -r1 "$LOCK" $REDIR; then
+	trap - EXIT HUP INT QUIT TERM
+	exit 1
+fi
+
+MIRROR="$HOME/mirror/ubuntu"
+OUT="$HOME/public_html"
+DEVEL=stonking
+PROPOSED_MIGRATION_SERIES="trusty xenial bionic focal jammy noble questing resolute stonking"
+
+mtimes="$(mktemp -d)"
+
+collect_mtimes () {
+	stat -c '%n %Y' \
+		"$MIRROR"/dists/*/Release \
+		>"$mtimes/$1" 2>/dev/null || true
+}
+
+mtime () {
+	(grep "^$2 " "$mtimes/$1" || echo "$2 0") | cut -d' ' -f2
+}
+
+mtime_changed () {
+	[ "$(mtime old "$1")" != "$(mtime new "$1")" ]
+}
+
+release_changed () {
+	mtime_changed "$MIRROR/dists/$1/Release"
+}
+
+
+is_devel () {
+	case $suite in
+	    $DEVEL-proposed)
+		return 0
+		;;
+	    *)
+		return 1
+		;;
+	esac
+}
+
+pm_pending_tests () {
+	local excuses
+	excuses="$OUT/proposed-migration/$1/update_excuses.html"
+	[ ! -f "$excuses" ] || grep -q "Test in progress" "$excuses"
+}
+
+background () {
+	local var="$1"
+	shift
+	"$@" &
+	eval "$var=\"\${$var:+\$$var }\$!\""
+}
+
+background_wait () {
+	local var="$1"
+	for pid in $(eval "echo \$$var"); do
+		code=0
+		wait "$pid" || code=$?
+		if [ "$code" != 0 ]; then
+			echo "Collected $pid with non-zero exit $code from $var"
+			return 1
+		fi
+	done
+	eval "$var="
+}
+
+collect_mtimes old
+
+mkdir -p "$MIRROR"
+rsync -aq \
+	--exclude dapper\* --exclude edgy\* --exclude feisty\* \
+	--exclude gutsy\* --exclude hardy\* --exclude intrepid\* \
+	--exclude jaunty\* --exclude karmic\* --exclude lucid\* \
+	--exclude maverick\* --exclude natty\* --exclude oneiric\* \
+	--exclude precise\* --exclude quantal\* --exclude raring\* \
+	--exclude saucy\* --exclude utopic\* --exclude wily\* \
+	--exclude yakkety\* --exclude zesty\* --exclude artful\* \
+	--exclude cosmic\* --exclude disco\* --exclude eoan\* \
+	--exclude groovy\* --exclude hirsute\* --exclude impish\* \
+	--exclude kinetic\* --exclude lunar\* --exclude mantic\* \
+	--exclude oracular\* --exclude plucky\* \
+	--include Packages\* --include Sources\* --include Release\* \
+	--include udeb.list --include \*\*/installer-\*/current \
+	--include Contents-\* \
+	--include \*/ --exclude \* --delete --delete-excluded \
+	--prune-empty-dirs \
+	ftpmaster.internal::ubuntu-dists/ "$MIRROR/dists/"
+
+collect_mtimes new
+
+# The $DEVEL-proposed chdist configuration is used by proposed-migration;
+# it's important to get that done as soon as possible, so we do it first.
+chdist_pids=
+chdists=0
+for dist in "$HOME/.chdist"/*; do
+	[ -d "$dist" ] || continue
+	suite="${dist##*/}"
+	suite="${suite%-*}"
+	if is_devel "$suite" && release_changed "$suite"; then
+		background chdist_pids chdist apt-get "${dist##*/}" update >/dev/null
+		chdists=$(($chdists + 1))
+	fi
+	if [ "$chdists" = 7 ]; then
+		background_wait chdist_pids
+		chdists=0
+	fi
+done
+background_wait chdist_pids
+
+pids=
+run_proposed_migration () {
+	DISTRIBUTION=ubuntu SERIES="$1" run-proposed-migration
+}
+
+check_git_uptodate() {
+	cd "$1"
+	git fetch origin -q
+	branch=$(git symbolic-ref --short -q HEAD)
+	[ -z "$(git diff origin/$branch..$branch)" ]
+}
+
+for series in $PROPOSED_MIGRATION_SERIES; do
+	if release_changed "$series" || release_changed "$series-proposed" || \
+	   release_changed "$series-updates" || \
+	   pm_pending_tests "$series" || \
+	   ! check_git_uptodate "$HOME/proposed-migration/data/${series}-proposed/Hints"
+	then
+		background pids run_proposed_migration "$series"
+	fi
+done
+
+# Now update all the other chdist configurations, and wait for that to
+# finish before doing anything else.
+chdist_pids=
+chdists=0
+for dist in "$HOME/.chdist"/*; do
+	[ -d "$dist" ] || continue
+	suite="${dist##*/}"
+	suite="${suite%-*}"
+	if ! is_devel "$suite" && release_changed "$suite"; then
+		background chdist_pids chdist apt-get "${dist##*/}" update >/dev/null
+		chdists=$(($chdists + 1))
+	fi
+	if [ "$chdists" = 7 ]; then
+		background_wait chdist_pids
+		chdists=0
+	fi
+done
+background_wait chdist_pids
+
+
+# We need to wait for the processes we coordinate to succeed, but if they
+# fail (as they might for various reasons, such as held locks), we should
+# still carry on and do the remaining tasks.
+background_wait pids || true
+
+
+collect_mtimes new

@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+# Copyright (C) 2018 Canonical Ltd
+
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# A copy of the GNU General Public License version 2 is in LICENSE.
+
+import argparse
+from collections import defaultdict, OrderedDict
+import datetime
+import time
+import json
+import os
+import threading
+from urllib.request import urlopen
+import urllib.error
+
+import attr
+from jinja2 import Environment, FileSystemLoader
+import yaml
+import lzma
+
+env = Environment(
+    loader=FileSystemLoader(os.path.dirname(os.path.abspath(__file__)) + '/templates'),
+    autoescape=True,
+    extensions=['jinja2.ext.i18n'],
+)
+env.install_null_translations(True)
+
+_lps = {}
+
+def get_lp(i, anon=True):
+    from launchpadlib.launchpad import Launchpad
+    k = (i, anon)
+    if k not in _lps:
+        print(i, "connecting...")
+        if anon:
+            _lps[k] = Launchpad.login_anonymously('sru-team-report', 'production', version='devel')
+        else:
+            _lps[k] = Launchpad.login_with('sru-team-report', 'production', version='devel')
+    return _lps[k]
+
+
+def get_true_ages_in_proposed(package_names, thread_count):
+    package_names = set(package_names)
+    r = {}
+    def run(i):
+        lp = get_lp(i, True)
+        ubuntu = lp.distributions['ubuntu']
+        primary_archive = ubuntu.archives[0]
+        devel_series = ubuntu.getSeries(name_or_version=ubuntu.development_series_alias)
+        while True:
+            try:
+                spn = package_names.pop()
+            except KeyError:
+                return
+            print(i, "getting true age in proposed for", spn)
+            history = primary_archive.getPublishedSources(
+                source_name=spn, distro_series=devel_series, exact_match=True)
+            last_proposed_spph = None
+            for spph in history:
+                if spph.pocket != "Proposed":
+                    break
+                last_proposed_spph = spph
+            if last_proposed_spph is None:
+                continue
+            age = datetime.datetime.now(tz=last_proposed_spph.date_created.tzinfo) - last_proposed_spph.date_created
+            r[spn] = age.total_seconds() / 3600 / 24
+    threads = []
+    for i in range(thread_count):
+        t = threading.Thread(target=run, args=(i,))
+        threads.append(t)
+        t.start()
+    for t in threads:
+        t.join()
+    return r
+
+
+def get_subscribers_lp(packages, thread_count):
+    from lazr.restfulclient.errors import ClientError
+    packages = set(packages)
+    def run(i, subscribers):
+        lp = get_lp(i, False)
+        ubuntu = lp.distributions['ubuntu']
+        while True:
+            try:
+                spn = packages.pop()
+            except KeyError:
+                return
+            print(i, spn)
+            distribution_source_package = ubuntu.getSourcePackage(name=spn)
+            for subscription in distribution_source_package.getSubscriptions():
+                subscriber = subscription.subscriber
+                try:
+                    if subscriber.is_team:
+                        subscribers[spn].append(subscriber.name)
+                except ClientError:
+                    # This happens for suspended users
+                    pass
+    results = []
+    threads = []
+    for i in range(thread_count):
+        d = defaultdict(list)
+        t = threading.Thread(target=run, args=(i, d))
+        results.append(d)
+        threads.append(t)
+        t.start()
+    for t in threads:
+        t.join()
+    result = defaultdict(list)
+    for d in results:
+        for k, v in d.items():
+            result[k].extend(v)
+    return result
+
+def get_subscribers_json(packages, subscribers_json):
+    if subscribers_json is None:
+        j = urlopen("https://ubuntu-archive-team.ubuntu.com/package-team-mapping.json")
+    else:
+        j = open(subscribers_json, 'rb')
+    with j:
+        team_to_packages = json.loads(j.read().decode('utf-8'))
+    package_to_teams = {}
+    for team, packages in team_to_packages.items():
+        for package in packages:
+            package_to_teams.setdefault(package, []).append(team)
+    return package_to_teams
+
+def setup_yaml():
+    """ http://stackoverflow.com/a/8661021 """
+    represent_dict_order = (
+        lambda self, data: self.represent_mapping('tag:yaml.org,2002:map',
+                                                  data.items()))
+    yaml.add_representer(OrderedDict, represent_dict_order)
+
+
+setup_yaml()
+
+def as_data(inst):
+    r = OrderedDict()
+    fields = [field.name for field in attr.fields(type(inst))]
+    fields.extend(getattr(inst, "extra_fields", []))
+    for field in fields:
+        if field.startswith('_'):
+            continue
+        v = getattr(
+            inst,
+            'serialize_' + field,
+            lambda: getattr(inst, field))()
+        if v is not None:
+            r[field] = v
+    return r
+
+@attr.s
+class ArchRegression:
+    arch = attr.ib(default=None)
+    log_link = attr.ib(default=None)
+    hist_link = attr.ib(default=None)
+
+
+@attr.s
+class Regression:
+    blocking = attr.ib(default=None) # source package name blocked
+    package = attr.ib(default=None) # source package name doing the blocking
+    version = attr.ib(default=None) # version that regressed
+    arches = attr.ib(default=None) # [ArchRegression]
+
+    def serialize_arches(self):
+        return [as_data(a) for a in self.arches]
+
+    @property
+    def package_version(self):
+        return self.package + '/' + self.version
+
+@attr.s
+class Problem:
+    kind = attr.ib(default=None) # 'blocked-in-proposed', 'regressing-other'
+    package_in_proposed = attr.ib(default=None) # name of package that's in proposed
+    regressing_package = attr.ib(default=None) # name of package regressing package_in_proposed, None if blocked-in-proposed
+    regressions = attr.ib(default=None) # [Regression]
+    waiting = attr.ib(default=None) # [(source_package_name, arches)]
+    data = attr.ib(default=None) # data for package_in_proposed
+    unsatdepends = attr.ib(default=None) # [string]
+    unsatbuilddep = attr.ib(default=None) # [string]
+    brokenbin = attr.ib(default=None) # [string]
+    componentmismatch = attr.ib(default=None) # [string]
+
+    _age = attr.ib(default=None)
+
+    extra_fields = ['age']
+
+    def serialize_regressions(self):
+        return [as_data(r) for r in self.regressions]
+
+    @property
+    def late(self):
+        return self.age > 3
+
+    @property
+    def age(self):
+        if self._age is not None:
+            return self._age
+        else:
+            try:
+                return self.data["policy_info"]["age"]["current-age"]
+            except KeyError:
+                return -1
+
+    @age.setter
+    def age(self, val):
+        self._age = val
+
+    @property
+    def key_package(self):
+        if self.regressing_package:
+            return self.regressing_package
+        return self.package_in_proposed
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--ppa', action='store')
+    parser.add_argument('--components', action='store', default="main,restricted")
+    parser.add_argument('--subscribers-from-lp', action='store_true')
+    parser.add_argument('--subscribers-json', action='store')
+    parser.add_argument('--true-ages', action='store_true')
+    parser.add_argument('--excuses-yaml', action='store')
+    parser.add_argument('output')
+    parser.add_argument('yaml_output', default=None)
+    args = parser.parse_args()
+
+    components = args.components.split(',')
+
+    print("fetching yaml")
+    if args.excuses_yaml:
+        if args.excuses_yaml.endswith('.xz'):
+            yaml_text = lzma.open(args.excuses_yaml)
+        else:
+            yaml_text = open(args.excuses_yaml)
+    else:
+        try:
+            yaml_text = lzma.open(urlopen("https://ubuntu-archive-team.ubuntu.com/proposed-migration/update_excuses.yaml.xz"))
+        except urllib.error.HTTPError as e:
+            print("Reading fallback yaml (%s)" % e)
+            yaml_text = urlopen("https://ubuntu-archive-team.ubuntu.com/proposed-migration/update_excuses.yaml")
+    print("parsing yaml")
+    # The CSafeLoader is ten times faster than the regular one
+    excuses = yaml.load(yaml_text, Loader=yaml.CSafeLoader)
+
+    print("pre-processing packages")
+    in_proposed_packages = {}
+    for item in excuses["sources"]:
+        source_package_name = item['item-name']
+        # Missing component means main
+        if item.get('component', 'main') not in components:
+            continue
+        prob = Problem(kind='package-in-proposed', data=defaultdict(dict, item), package_in_proposed=source_package_name)
+        in_proposed_packages[source_package_name] = prob
+        prob.regressions = []
+        prob.waiting = []
+        prob.componentmismatch = []
+        # The verdict entries are not items to list on the report
+        for policy in ['autopkgtest', 'update-excuse', 'block-bugs']:
+            try:
+                del item['policy_info'][policy]['verdict']
+            except KeyError:
+                pass
+        if 'autopkgtest' in item['reason']:
+            for package, results in sorted(item['policy_info']['autopkgtest'].items()):
+                regr_arches = []
+                wait_arches = []
+                for arch, result in sorted(results.items()):
+                    outcome, log, history, wtf1, wtf2 = result
+                    if outcome == "REGRESSION":
+                        regr_arches.append(ArchRegression(arch=arch, log_link=log, hist_link=history))
+                    if outcome == "RUNNING":
+                        wait_arches.append(arch)
+                if regr_arches:
+                    p, v = package.split('/')
+                    regr = Regression(package=p, version=v, blocking=source_package_name)
+                    regr.arches = regr_arches
+                    prob.regressions.append(regr)
+                if wait_arches:
+                    prob.waiting.append((package + ": " + ", ".join(wait_arches)))
+        if 'depends' in item['reason']:
+            for l in item['excuses']:
+                if 'cannot depend on' in l:
+                    prob.componentmismatch.append(l)
+        if 'dependencies' in item and 'unsatisfiable-dependencies' in item['dependencies']:
+                unsatd = defaultdict(list)
+                for arch, packages in item['dependencies']['unsatisfiable-dependencies'].items():
+                    for p in packages:
+                        unsatd[p].append(arch)
+                prob.unsatdepends = ['{}: {}'.format(p, ', '.join(sorted(arches))) for p, arches in sorted(unsatd.items())]
+        if 'policy_info' in item:
+            if 'build-depends' in item['policy_info'] and 'unsatisfiable-arch-build-depends' in item['policy_info']['build-depends']:
+                    unsatdbd = defaultdict(list)
+                    for arch, packages in item['policy_info']['build-depends']['unsatisfiable-arch-build-depends'].items():
+                        for p in packages:
+                            unsatdbd[p].append(arch)
+                    prob.unsatbuilddep = ['{}: {}'.format(p, ', '.join(sorted(arches))) for p, arches in sorted(unsatdbd.items())]
+
+    package_to_problems = defaultdict(list)
+
+    for problem in in_proposed_packages.values():
+        # nautilus/riscv64 -> nautilus
+        pkg = problem.package_in_proposed.split('/')[0]
+        package_to_problems[pkg].append(problem)
+        for regression in problem.regressions:
+            if regression.blocking not in in_proposed_packages:
+                continue
+            if regression.blocking == regression.package:
+                continue
+            package_to_problems[regression.package].append(Problem(
+                kind='regressing-other', package_in_proposed=regression.blocking,
+                regressing_package=regression.package,
+                regressions=[regression],
+                data=in_proposed_packages[regression.blocking].data))
+
+    if args.true_ages:
+        true_ages = get_true_ages_in_proposed(set(package_to_problems), 10)
+        for package, true_age in true_ages.items():
+            for problem in package_to_problems[package]:
+                problem.age = true_age
+
+    print("getting subscribers")
+    if args.subscribers_from_lp:
+        subscribers = get_subscribers_lp(set(package_to_problems), 10)
+        for p in set(package_to_problems):
+            if p not in subscribers:
+                subscribers[p] = ['unsubscribed']
+    else:
+        subscribers = get_subscribers_json(set(package_to_problems), args.subscribers_json)
+        for p in set(package_to_problems):
+            pkg = p.split('/')[0]
+            if pkg not in subscribers:
+                subscribers[p] = ['unknown']
+
+    all_teams = set()
+    team_to_problems = defaultdict(list)
+    for package, teams in subscribers.items():
+        all_teams |= set(teams)
+        for team in teams:
+            team_to_problems[team].extend(package_to_problems[package])
+
+    for packages in team_to_problems.values():
+        packages.sort(key=lambda prob: (-prob.age, prob.key_package))
+
+    team_to_attn_count = {}
+    for team, problems in team_to_problems.items():
+        team_to_attn_count[team] = len([problem for problem in problems if problem.late])
+
+    print("rendering")
+    t = env.get_template('team-report.html')
+    with open(args.output, 'w', encoding='utf-8') as fp:
+        fp.write(t.render(
+            all_teams=all_teams,
+            team_to_problems=team_to_problems,
+            team_to_attn_count=team_to_attn_count,
+            now=excuses["generated-date"].strftime("%Y.%m.%d %H:%M:%S") + ' ' + time.localtime().tm_zone))
+    if args.yaml_output:
+        team_to_problem_data = {}
+        for t, ps in team_to_problems.items():
+            team_to_problem_data[t] = [as_data(p) for p in ps]
+        with open(args.yaml_output, 'w', encoding='utf-8') as fp:
+            yaml.dump(team_to_problem_data, fp)
+
+
+if __name__ == '__main__':
+    main()

@@ -20,22 +20,23 @@ PROPOSED_MIGRATION_PATH = Path(f"~{USER}/proposed-migration").expanduser()
 CODE_PATH = PROPOSED_MIGRATION_PATH / "code"
 PUBLIC_HTML_PATH = Path(f"~{USER}/public_html").expanduser()
 
-UBUNTU_ARCHIVE_SCRIPTS_REPO = "https://git.launchpad.net/ubuntu-archive-scripts"
-UBUNTU_ARCHIVE_SCRIPTS_LOCATION = Path(f"/home/{USER}/ubuntu-archive-scripts")
-UBUNTU_ARCHIVE_SCRIPTS_BRANCH = "main"
-UBUNTU_ARCHIVE_TOOLS_REPO = "https://git.launchpad.net/ubuntu-archive-tools"
-UBUNTU_ARCHIVE_TOOLS_LOCATION = Path(f"/home/{USER}/ubuntu-archive-tools")
-UBUNTU_ARCHIVE_TOOLS_BRANCH = "main"
-GERMINATE_REPO = "https://git.launchpad.net/germinate"
-GERMINATE_LOCATION = Path(f"/home/{USER}/germinate")
-# germinate has both a main and a master branch but we use master in the archive-toolbox
-GERMINATE_BRANCH = "master"
 BRITNEY1_REPO = "https://git.launchpad.net/~ubuntu-release/britney/+git/britney1-ubuntu"
 BRITNEY1_LOCATION = PROPOSED_MIGRATION_PATH / "code" / "b1"
 BRITNEY1_BRANCH = "main"
 BRITNEY2_REPO = "https://git.launchpad.net/~ubuntu-release/britney/+git/britney2-ubuntu"
 BRITNEY2_LOCATION = PROPOSED_MIGRATION_PATH / "code" / "b2"
 BRITNEY2_BRANCH = "master"
+
+# britney expects a *bunch* of magic directories to be present
+BRITNEY_DIRS = [
+    PROPOSED_MIGRATION_PATH / "d-i",
+    PROPOSED_MIGRATION_PATH / "var",
+    PROPOSED_MIGRATION_PATH / "var" / "lock",
+    PROPOSED_MIGRATION_PATH / "var" / "data",
+    PROPOSED_MIGRATION_PATH / "ssh",
+    PROPOSED_MIGRATION_PATH / "Heidi",
+    PROPOSED_MIGRATION_PATH / "input",
+]
 
 DEB_DEPENDENCIES = [
     "procmail",
@@ -66,6 +67,11 @@ def is_proxy_defined():
         or "JUJU_CHARM_NO_PROXY" in os.environ
     )
 
+def install_scripts():
+    logger.info("installing scripts")
+    scripts_path = CHARM_APP_DATA / "bin"
+    shutil.copytree(scripts_path, "/usr/local/bin", dirs_exist_ok=True)
+
 def install_systemd_units():
     logger.info("installing systemd units")
     units_path = CHARM_APP_DATA / "units"
@@ -78,7 +84,6 @@ def install_systemd_units():
         autoescape=jinja2.select_autoescape(),
     )
     j2context = {
-        "archive_scripts_location": UBUNTU_ARCHIVE_SCRIPTS_LOCATION,
         "user": USER,
     }
     for unit in units_to_install:
@@ -94,17 +99,13 @@ def install_systemd_units():
     if units_to_enable:
         systemd.service_enable("--now", *units_to_enable)
 
-def create_user():
-    logger.info(f"creating user {USER}")
-    subprocess.run(['useradd', '-m', '-p', 'ubuntu', USER])
-
 def create_directories():
     logger.info("creating directories")
     for directory in [
         PROPOSED_MIGRATION_PATH,
         CODE_PATH,
         PUBLIC_HTML_PATH
-    ]:
+    ] + BRITNEY_DIRS:
         # use run_as_user instead of Path.mkdir
         # for appropriate permissions
         run_as_user(f"mkdir -p {directory}")
@@ -122,21 +123,6 @@ def clone_repositories():
             BRITNEY2_LOCATION,
             BRITNEY2_BRANCH,
         ),
-        (
-            UBUNTU_ARCHIVE_SCRIPTS_REPO,
-            UBUNTU_ARCHIVE_SCRIPTS_LOCATION,
-            UBUNTU_ARCHIVE_SCRIPTS_BRANCH,
-        ),
-        (
-            UBUNTU_ARCHIVE_TOOLS_REPO,
-            UBUNTU_ARCHIVE_TOOLS_LOCATION,
-            UBUNTU_ARCHIVE_TOOLS_BRANCH,
-        ),
-        (
-            GERMINATE_REPO,
-            GERMINATE_LOCATION,
-            GERMINATE_BRANCH
-        )
     ]:
         shutil.rmtree(location, ignore_errors=True)
         # TODO: the currently packaged version of pygit2 does not support cloning through
@@ -172,6 +158,7 @@ def install():
     apt.add_package(DEB_DEPENDENCIES)
     create_directories()
     clone_repositories()
+    install_scripts()
     install_systemd_units()
 
 def start():

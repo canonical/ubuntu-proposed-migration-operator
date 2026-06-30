@@ -1,0 +1,69 @@
+#! /bin/sh
+set -e
+
+# TODO: figure out if promote-to-release is actually used
+# # We need promote-to-release.
+# case :$PATH: in
+#     *:/home/ubuntu-archive/ubuntu-archive-tools:*)
+# 	;;
+#     *)
+# 	PATH="/home/ubuntu-archive/ubuntu-archive-tools:$PATH"
+# 	;;
+# esac
+
+DEFAULT_DISTRIBUTION=ubuntu
+DEFAULT_SERIES=stonking
+
+export DISTRIBUTION="${DISTRIBUTION:-$DEFAULT_DISTRIBUTION}"
+export SERIES="${SERIES:-$DEFAULT_SERIES}"
+if [ "$DISTRIBUTION" = ubuntu ]; then
+	full_series="$SERIES"
+else
+	full_series="$DISTRIBUTION/$SERIES"
+fi
+
+case $DISTRIBUTION/$SERIES in
+    ubuntu/$DEFAULT_SERIES)
+	actions='hints_git blocks excuse_bugs pkglists run save stats'
+	;;
+    ubuntu/*)
+	actions='hints_git blocks excuse_bugs pkglists run stats'
+	;;
+    *)
+	echo "Don't know what actions to run for $DISTRIBUTION/$SERIES!" >&2
+	exit 1
+	;;
+esac
+
+cd "$HOME/proposed-migration"
+[ -e STOP ] && exit 0
+if ! lockfile -r0 ".run-proposed-migration-$DISTRIBUTION-$SERIES.lock"; then
+	exit 1
+fi
+
+cleanup () {
+    rm -f $HOME/proposed-migration/.run-proposed-migration-$DISTRIBUTION-$SERIES.lock
+    [ -n "$tmpdir" ] && rm -rf "$tmpdir"
+}
+trap cleanup EXIT HUP INT QUIT TERM
+(cd "$HOME/proposed-migration/code/b1"; git fetch origin; git reset --hard --quiet origin/main)
+(cd "$HOME/proposed-migration/code/b2"; git fetch origin; git reset --hard --quiet origin/master)
+logfile="log/$full_series/$(date -u +%F/%T).log"
+mkdir -p "${logfile%/*}"
+
+code/b1/britney $actions >"$logfile" 2>&1
+if [ "$SERIES" = "$DEFAULT_SERIES" ]; then
+    cd ~/public_html/proposed-migration/
+    generate-team-p-m --excuses-yaml $SERIES/update_excuses.yaml.xz \
+                      --subscribers-json ~/public_html/package-team-mapping.json \
+                      $SERIES/update_excuses_by_team.html $SERIES/update_excuses_by_team.yaml
+    tmpdir="$(mktemp -d)"
+    wget -q -O "$tmpdir/debian-excuses.yaml" https://release.debian.org/britney/excuses.yaml
+# vorlon 20240404 output currently unused, disable for now to speed up britney
+#    find-rcbuggy-problem-packages --ubuntu-excuses $SERIES/update_excuses.yaml.xz \
+#                                  --ubuntu-update_output $SERIES/update_output.txt \
+#                                  --debian-excuses "$tmpdir/debian-excuses.yaml" \
+#                                  --output $SERIES/rcbuggy-problem-packages.html
+fi
+
+exit 0
