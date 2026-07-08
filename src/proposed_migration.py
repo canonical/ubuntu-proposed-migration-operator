@@ -40,6 +40,8 @@ BRITNEY_DIRS = [
 
 DEB_DEPENDENCIES = [
     "procmail",
+    "python3-keyring",
+    "python3-amqplib",
 ]
 
 CHARM_SOURCE_PATH = Path(__file__).parent.parent
