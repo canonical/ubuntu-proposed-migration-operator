@@ -1,0 +1,168 @@
+#! /usr/bin/python3
+
+# Copyright (C) 2012  Canonical Ltd.
+# Author: Colin Watson <cjwatson@ubuntu.com>
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; version 3 of the License.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+"""Promote packages to release pocket based on britney output."""
+
+from optparse import OptionParser
+import sys
+
+from launchpadlib.errors import HTTPError
+from launchpadlib.launchpad import Launchpad
+
+import lputils
+
+
+def promote(options, name, version, architecture):
+    if architecture is None:
+        display = "%s/%s" % (name, version)
+    else:
+        display = "%s/%s/%s" % (name, version, architecture)
+
+    # check to see if the package and version has already been published or is
+    # pending publication
+    if architecture is None:
+        try:
+            release_sources = options.archive.getPublishedSources(
+                source_name=name, version=version,
+                distro_series=options.series, pocket=options.pocket.title(),
+                exact_match=True, status="Published")
+        except IndexError:
+            release_sources = options.archive.getPublishedSources(
+                source_name=name, version=version,
+                distro_series=options.series, pocket=options.pocket.title(),
+                exact_match=True, status="Pending")
+        except HTTPError as e:
+            print("getPublishedSources %s: %s" % (display, e.content),
+                  file=sys.stderr)
+            return True
+        if len(release_sources) > 0:
+            return True
+
+    if options.dry_run:
+        print("Would move: %s" % display)
+        return
+    elif options.verbose:
+        print("Moving: %s" % display)
+        sys.stdout.flush()
+
+    try:
+        percentage = None
+        if options.pocket == 'updates':
+            percentage = 10
+        options.archive.copyPackage(
+            move=True, source_name=name, version=version,
+            from_archive=options.archive,
+            from_series=options.series.name, from_pocket="Proposed",
+            to_series=options.series.name, to_pocket=options.pocket.title(),
+            include_binaries=True, sponsored=options.requestor,
+            phased_update_percentage=percentage,
+            auto_approve=True)
+    except HTTPError as e:
+        print("copyPackage %s: %s" % (display, e.content), file=sys.stderr)
+        return False
+
+    return True
+
+
+def promote_all(options, delta):
+    with open(delta) as delta_file:
+        for line in delta_file:
+            if line.startswith("#"):
+                continue
+            words = line.rstrip("\n").split(" ")
+            if len(words) == 1:
+                name = words[0]
+                print("Cannot handle removal: %s" % name, file=sys.stderr)
+                continue
+            elif len(words) == 2:
+                name = words[0]
+                if name.startswith("-"):
+                    print("Cannot handle removal: %s" % name[1:],
+                          file=sys.stderr)
+                    continue
+                elif "/" in name:
+                    name, architecture = name.split("/", 1)
+                else:
+                    architecture = None
+                version = words[1]
+                if not promote(options, name, version, architecture):
+                    # Stop on any single failure.  Britney's output delta
+                    # should be ordered such that the optimal order of
+                    # copying is from start to finish, and skipping one is
+                    # more likely to cause problems than aborting.
+                    return False
+            elif len(words) == 3:
+                name = words[0]
+                if name.startswith("-"):
+                    print("Cannot handle removal: %s" % name[1:],
+                          file=sys.stderr)
+                    continue
+                version = words[1]
+                architecture = words[2]
+                if not promote(options, name, version, architecture):
+                    # Stop on any single failure.  Britney's output delta
+                    # should be ordered such that the optimal order of
+                    # copying is from start to finish, and skipping one is
+                    # more likely to cause problems than aborting.
+                    return False
+    return True
+
+
+def main():
+    parser = OptionParser(usage="usage: %prog [options] BRITNEY-OUTPUT-DELTA")
+    parser.add_option(
+        "-l", "--launchpad", dest="launchpad_instance", default="production")
+    parser.add_option(
+        "-n", "--dry-run", default=False, action="store_true",
+        help="only show copies that would be performed")
+    parser.add_option(
+        "-v", "--verbose", default=False, action="store_true",
+        help="be more verbose (redundant in --dry-run mode)")
+    parser.add_option(
+        "-d", "--distribution", default="ubuntu",
+        metavar="DISTRIBUTION", help="promote within DISTRIBUTION")
+    # dest="suite" to make lputils.setup_location's job easier.
+    parser.add_option(
+        "-s", "--series", dest="suite",
+        metavar="SERIES", help="promote from SERIES-proposed to SERIES")
+    parser.add_option(
+        "-p", "--pocket", default="release",
+        help="the pocket to which the package should be copied")
+    options, args = parser.parse_args()
+    if len(args) != 1:
+        parser.error("need britney output delta file")
+    if options.pocket not in ('updates', 'release'):
+        parser.error("pocket must be updates or release not %s" %
+                     options.pocket)
+
+    options.launchpad = Launchpad.login_with(
+        "promote-to-release", options.launchpad_instance, version="devel")
+    lputils.setup_location(options)
+    options.dases = {}
+    for das in options.series.architectures:
+        options.dases[das.architecture_tag] = das
+
+    options.requestor = options.launchpad.people["katie"]
+
+    if promote_all(options, args[0]):
+        return 0
+    else:
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

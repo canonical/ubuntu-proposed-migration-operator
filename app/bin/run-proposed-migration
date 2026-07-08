@@ -1,16 +1,6 @@
 #! /bin/sh
 set -e
 
-# TODO: figure out if promote-to-release is actually used
-# # We need promote-to-release.
-# case :$PATH: in
-#     *:/home/ubuntu-archive/ubuntu-archive-tools:*)
-# 	;;
-#     *)
-# 	PATH="/home/ubuntu-archive/ubuntu-archive-tools:$PATH"
-# 	;;
-# esac
-
 DEFAULT_DISTRIBUTION=ubuntu
 DEFAULT_SERIES=stonking
 
