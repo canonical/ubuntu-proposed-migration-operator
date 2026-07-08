@@ -40,7 +40,7 @@ trap cleanup EXIT HUP INT QUIT TERM
 logfile="log/$full_series/$(date -u +%F/%T).log"
 mkdir -p "${logfile%/*}"
 
-britney $actions >"$logfile" 2>&1
+run_britney $actions >"$logfile" 2>&1
 if [ "$SERIES" = "$DEFAULT_SERIES" ]; then
     cd ~/public_html/proposed-migration/
     generate-team-p-m --excuses-yaml $SERIES/update_excuses.yaml.xz \

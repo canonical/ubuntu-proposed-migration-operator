@@ -81,8 +81,8 @@ def install_scripts():
     shutil.copytree(scripts_path, "/usr/local/bin", dirs_exist_ok=True)
     shutil.copytree(runner_path, BRITNEY1_LOCATION, dirs_exist_ok=True)
     # create a symlink to the britney script from /usr/local/bin so that it can be run from anywhere
-    logger.info("creating symlink for britney script")
-    runner_script = BRITNEY1_LOCATION / "britney"
+    logger.info("creating symlink for run_britney script")
+    runner_script = BRITNEY1_LOCATION / "run_britney"
     Path("/usr/local/bin/britney").symlink_to(runner_script)
 
 def install_systemd_units():
