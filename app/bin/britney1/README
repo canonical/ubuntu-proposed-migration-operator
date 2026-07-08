@@ -1,0 +1,104 @@
+Britney is run from /org/release.debian.org/britney. Some notes about
+how it works, what to do and what not:
+
+  * the code is in code/b1, which is a git repo. Changes must be
+    approved by Release Managers first, and all changes must be commited
+    (i.e. nothing uncommited is allowed there).
+
+    Commit emails will be send to britney@release.debian.org, you can
+    subscribe to that if you want them (along with cron mail from
+    britney).
+
+  * the main script is code/b1/britney. It accepts a list of "actions"
+    to perform. See ~release/etc/crontab.release for the default list,
+    and see the "Actions" and "Re-running" sections below.
+
+  * input/ contains FauxPackages, edit if if you need, and an urgencies/
+    subdirectory where dinstall places a summary of the uploads of that
+    day.
+
+  * Heidi/, ssh/: see the "save" action below.
+
+  * d-i/: udeb handling is done by the release team too. See d-i/README
+    for details (when Dato writes it; Dato takes care of udebs until then).
+
+
+Actions
+=======
+
+The main actions (read, the ones that are invoked from cron) are:
+
+  * urgencies: updates var/data/testing/Urgency with the data provided
+    by dinstall.
+
+  * bugs: fetches bug counts from bugs.debian.org.
+
+  * pkglists: generates all needed Packages files according to the
+    latest dinstall.
+
+  * run: the main action, running the update_out.py script. Takes
+    hints, packages files, and tries to migrate stuff. When done, it
+    writes a HeidiResult file used by "save" below *and rewrites the
+    var/data/testing/Packags_* files*. That is important.
+
+  * save: commits the HeidiResult provided by update_out above. This is
+    done by:
+
+      - taking HeidiResult, stripping unwanted stuff (faux packages),
+	and put the result into a file under Heidi/set, named after the
+	current timestamp.
+
+      - changing the "current" symlink under Heidi/set to point to this
+	new file, gzipping the previous current.
+
+      - signaling ftpmaster scripts to import the new file. This is done
+	with a ssh trigger, whose key is in ssh/.
+
+	IF YOU NEED TO UNDO ONE IMPORT: gunzip the previous file, point
+	the "current" symlink to it, and:
+
+	  % ssh -2 -i % ~release/britney/ssh/ftp-master_trigger_key dak@ries.debian.org
+    
+  * stats: copies the resulting update.OUTPUT and update.EXCUSES files
+    to www/britney, and checks for uninstallabilities.
+
+
+Re-running
+==========
+
+Re-runs can be incremental or not:
+
+  * incremental means that you run britney against the results of the
+    previous run. This is done by just issuing `./britney run`.
+
+    WARNING: even if you don't save the results of an incremental
+    re-run, following re-runs will start with the state the previous one
+    left. This means it's a very very bad idea to use incremental
+    re-runs to test force-hint hints; please always use a private
+    britney instead.
+
+  * non-incremental means that you start from scratch against the state
+    of the previous install. To do this, you need to do "pkglists" prior
+    to "run".
+
+    IF THERE WERE ANY SUCCESSFUL HINTS IN THE PREVIOUS RUN, YOU MUST
+    CHECK WITH THEIR OWNERS WHETHER IT'S OK TO RUN FROM SCRATCH. Or, in
+    the worst case, you should check whether they have cleaned up their
+    hints already, since in that case their work will be lost.
+
+    (For this reason it's not very wise to clean your hints before your
+    stuff is dinstalled.)
+
+If you're satisfied with the result of your re-run, run `./britney save`.
+
+
+Private britneys
+================
+
+It is ok to run private britneys if you nice them, though Ganneff
+prefers if you don't do it while dinstall is running.
+
+Do NOT run your britney against britney/var/data directly, use a
+copy of your own.
+
+TODO(dato): Some HOWTO here.

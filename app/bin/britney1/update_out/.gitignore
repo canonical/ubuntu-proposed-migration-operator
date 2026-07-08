@@ -1,0 +1,6 @@
+*.o
+*.so
+/oldstuff
+/Makefile.dep
+/update.EXCUSES_py
+/update.OUTPUT_py

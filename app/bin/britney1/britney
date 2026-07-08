@@ -1,0 +1,699 @@
+#!/bin/bash
+
+set -e
+set -u
+
+# 2026-02-19
+# resolute migration is hitting these memory limits when it does test_results = deepcopy(self.test_results)
+#ulimit -d 8000000 -m 8000000 -v 8000000
+umask 002
+
+
+OPTIONS="$@"
+qoption () {
+    for a in $OPTIONS; do if [ "$a" = "$1" ]; then return 0; fi; done
+    return 1
+}
+
+option () {
+    for a in $OPTIONS; do if [ "$a" = "$1" ]; then date -uR; return 0; fi; done
+    return 1
+}
+
+LP_SERVICE="${LP_SERVICE:-production}"
+DISTRIBUTION="${DISTRIBUTION:-ubuntu}"
+DEFAULT_SERIES=stonking
+SERIES="${SERIES:-$DEFAULT_SERIES}"
+
+# DATE
+NOW=`date +"%F/%T" -u`
+
+# Dirs:
+BASE=/home/ubuntu-archive/proposed-migration
+DAK_LOCKDIR=/srv/ftp-master.debian.org/lock
+FTP_MIRROR=/home/ubuntu-archive/mirror/$DISTRIBUTION
+
+# Special variable to switch britney into a no-action mode
+NO_ACT=${NO_ACT:-}
+
+D_I=$BASE/d-i
+VAR=$BASE/var
+SSH=$BASE/ssh
+HEIDI=$BASE/Heidi
+INPUT=$BASE/input
+CODE=$BASE/code/b1
+
+DATA=$VAR/data
+LOCKDIR=$VAR/lock
+HEIDI_SET=$HEIDI/set
+SCRIPTS=$CODE/scripts
+FAUXDIR=$CODE/fauxpkg
+UPDATE_OUT=$CODE/update_out
+URGENCIES=$INPUT/urgencies
+
+LOCK=$LOCKDIR/britney-$DISTRIBUTION-$SERIES.lock
+# allow a notest-only run to run in parallel under a different lock
+if [ "$OPTIONS" = run_notest ]; then
+    LOCK=$LOCKDIR/britney-$DISTRIBUTION-$SERIES-notest.lock
+fi
+DAK_LOCK=$DAK_LOCKDIR/daily.lock
+DAK_STOP=$DAK_LOCKDIR/archive.stop
+
+TESTING=$DATA/$SERIES
+UNSTABLE=$DATA/$SERIES-proposed
+TPU=$DATA/testing-proposed-updates
+
+FAUXPKG_SCRIPT=$FAUXDIR/fauxpkg.py
+SSH_KEY=$SSH/ftp-master_trigger_key
+
+HTML=/home/ubuntu-archive/public_html/proposed-migration
+if [ "$DISTRIBUTION" != ubuntu ]; then
+    HTML="$HTML/$DISTRIBUTION"
+fi
+BOOTSTRAP_DIR=/home/ubuntu-archive/public_html/bootstrap
+
+# Britney 2
+DATA_B2=$VAR/data-b2
+CODE_B2=$BASE/code/b2
+B2_OUTPUT=$DATA_B2/output
+B2_CONFIG=${B2_CONFIG:-$CODE_B2/britney.conf}
+B2_AMQP_PASSWORD="$(cat $BASE/amqp-password.txt)"
+
+if [ -f $DAK_STOP ]; then
+  echo "$DAK_STOP exists, not running"
+  exit 1
+fi
+
+# 10800 seconds = 3 hours
+# 129600 seconds = 36 hours
+if ! lockfile -r0 -l129600 $LOCK 2>/dev/null >/dev/null; then
+    echo "Could not get britney lockfile!"
+    ls -l "$LOCK"
+    exit 1
+fi
+
+trap exit_function 0
+exit_function () {
+    rm -f $LOCK
+}
+
+#eval $( dak admin config db-shell )
+
+suite_info () {
+    timeout 60 python3 -c '
+from __future__ import print_function
+
+import os
+import sys
+
+from launchpadlib.launchpad import Launchpad as _Launchpad
+
+# Work around non-multiple-instance-safety of launchpadlib (bug #459418).
+class Launchpad(_Launchpad):
+    @classmethod
+    def _get_paths(cls, service_root, launchpadlib_dir=None):
+        service_root, launchpadlib_dir, cache_path, service_root_dir = (
+            _Launchpad._get_paths(
+                service_root, launchpadlib_dir=launchpadlib_dir))
+        cache_path += "-proposed-migration"
+        if not os.path.exists(cache_path):
+            os.makedirs(cache_path, 0o700)
+        return service_root, launchpadlib_dir, cache_path, service_root_dir
+
+launchpad = Launchpad.login_anonymously("proposed-migration", sys.argv[1])
+distro = launchpad.distributions[sys.argv[2]]
+series_name = sys.argv[3].split("-")[0]
+series = distro.getSeries(name_or_version=series_name)
+'"$1" "$LP_SERVICE" "$DISTRIBUTION" "$2"
+}
+
+suite_arches () {
+    suite_info 'print(" ".join(arch.architecture_tag for arch in series.architectures))' "$1" || exit 1
+}
+
+suite_archindep () {
+    suite_info 'print(series.nominatedarchindep.architecture_tag)' "$1" || exit 1
+}
+
+if ! qoption allowdaklock; then
+	while [ -f $DAK_LOCK ]; do
+		echo `date` $DAK_LOCK exists.  Sleeping in 10 more minutes.
+		sleep 600
+	done
+fi
+
+urgencies () {
+  echo URGENCIES:
+  cd $BASE
+  for u in $URGENCIES/install-urgencies-*; do
+    [ -e "$u" ] || continue
+    cat "$u" >> $1/$SERIES/Urgency # XXX I'd rather not have this in $DATA --dato
+    rm "$u"
+  done
+}
+
+if option urgencies; then
+  urgencies $DATA_B2
+fi
+
+bugs () {
+  for suite in $SERIES $SERIES-proposed; do
+    x="$1/${suite}/BugsV"
+    wget --quiet -O "${x}.new" http://bugs.debian.org/release-critical/britney/${suite}-nr
+    if [ -s ${x}.new ]; then mv ${x}.new $x; else rm $x.new; exit 1; fi
+  done
+}
+if option bugs; then
+  echo BUGS:
+  bugs $DATA_B2
+fi
+
+if option bugs_b1; then
+  echo BUGS_B1:
+  bugs $DATA
+fi
+
+if option bugs_b2; then
+  echo BUGS_B2:
+  bugs $DATA_B2
+fi
+
+excuse_bugs() {
+  tagged_bugs $1 update-excuse ExcuseBugs
+}
+
+blocks () {
+  tagged_bugs $1 block-proposed Blocks
+}
+
+tagged_bugs () {
+  local tag_template tags output_file
+  tag_template=$2
+  output_file=$3
+  [ "$DISTRIBUTION" = ubuntu ] || return 0
+  mkdir -p "$1/$SERIES-proposed"
+  if [ "$SERIES" = "$DEFAULT_SERIES" ]; then
+    tags="$tag_template $tag_template-$SERIES"
+  else
+    tags="$tag_template-$SERIES"
+  fi
+  timeout 1800 python3 -c '
+from __future__ import print_function
+
+import calendar
+import os
+import sys
+try:
+    from urllib.parse import urlsplit
+except ImportError:
+    from urlparse import urlsplit
+
+from launchpadlib.launchpad import Launchpad as _Launchpad
+
+# Work around non-multiple-instance-safety of launchpadlib (bug #459418).
+class Launchpad(_Launchpad):
+    @classmethod
+    def _get_paths(cls, service_root, launchpadlib_dir=None):
+        service_root, launchpadlib_dir, cache_path, service_root_dir = (
+            _Launchpad._get_paths(
+                service_root, launchpadlib_dir=launchpadlib_dir))
+        cache_path += "-proposed-migration"
+        if not os.path.exists(cache_path):
+            os.makedirs(cache_path, 0o700)
+        return service_root, launchpadlib_dir, cache_path, service_root_dir
+
+launchpad = Launchpad.login_with("proposed-migration", sys.argv[1])
+distro = launchpad.distributions[sys.argv[2]]
+tags = sys.argv[3].split()
+series = distro.getSeries(name_or_version=sys.argv[4])
+blocks = set()
+tasks = list(series.searchTasks(omit_targeted=False, tags=tags))
+tasks += list(distro.searchTasks(omit_targeted=False, tags=tags))
+block_detail = {}
+for task in tasks:
+    target = task.target
+    bug = task.bug
+    if urlsplit(target.resource_type_link).fragment in (
+            "distribution_source_package", "source_package"):
+        date = block_detail.get(bug.id)
+        if date is None:
+            for action in reversed(
+                    [a for a in bug.activity if a.whatchanged == "tags"]):
+                oldtags = action.oldvalue.split()
+                newtags = action.newvalue.split()
+                gained_block = False
+                for tag in tags:
+                    if tag not in oldtags and tag in newtags:
+                        gained_block = True
+                        break
+                if gained_block:
+                    date = action.datechanged
+                    break
+            else:
+                date = bug.date_created
+            block_detail[bug.id] = date
+        blocks.add("%s %d %d" %
+              (os.path.basename(target.self_link), bug.id,
+               calendar.timegm(date.timetuple())))
+print("\n".join(sorted(blocks)))
+' "$LP_SERVICE" "$DISTRIBUTION" "$tags" "$SERIES" >"$1/$SERIES-proposed/$output_file.new"
+  mv "$1/$SERIES-proposed/$output_file.new" "$1/$SERIES-proposed/$output_file"
+}
+if option blocks; then
+  echo BLOCKS:
+  blocks $DATA_B2
+fi
+if option excuse_bugs; then
+  echo EXCUSE BUGS:
+  excuse_bugs $DATA_B2
+fi
+
+pkg_lists () {
+  for suite in $SERIES $SERIES-proposed; do
+      mkdir -p $1/$suite
+      suite_dirs=$FTP_MIRROR/dists/$suite
+      if [ "$suite" = "$SERIES" ]; then
+          suite_dirs="$suite_dirs $FTP_MIRROR/dists/$SERIES-updates"
+      fi
+      >$1/$suite/Sources
+      for suite_dir in $suite_dirs; do
+          gzip -t $suite_dir/{main,restricted,universe,multiverse}/source/Sources.gz
+          zcat $suite_dir/{main,restricted,universe,multiverse}/source/Sources.gz >>$1/$suite/Sources
+      done
+      for arch in `suite_arches $suite`; do
+          >$1/$suite/Packages_$arch
+          for suite_dir in $suite_dirs; do
+              gzip -t $suite_dir/{main,restricted,universe,multiverse}/binary-$arch/Packages.gz
+              zcat $suite_dir/{main,restricted,universe,multiverse}/binary-$arch/Packages.gz >>$1/$suite/Packages_$arch
+              gzip -t $suite_dir/{main,restricted,universe,multiverse}/debian-installer/binary-$arch/Packages.gz
+              zcat $suite_dir/{main,restricted,universe,multiverse}/debian-installer/binary-$arch/Packages.gz >>$1/$suite/Packages_$arch
+          done
+      done
+  done
+  $FAUXPKG_SCRIPT generate $1/$SERIES $1/$SERIES-proposed
+}
+
+lite_sync () {
+  cat <<EOF | rsync -a --files-from=- $1 $2
+$SERIES/Dates
+$SERIES/BugsV
+$SERIES/Urgency
+$SERIES-proposed/BugsV
+$SERIES-proposed/Hints
+EOF
+
+}
+
+if option pkglists; then
+  echo PKGLISTS:
+  cd $DATA_B2
+  pkg_lists $DATA_B2
+fi
+
+if option sync_b2; then
+  rsync -ar $DATA/ $DATA_B2
+fi
+
+# Give options to run a b2 from scratch after b1 has finished
+if option pkglists_b2; then
+  echo PKGLISTS_B2:
+  cd $DATA_B2
+  pkg_lists $DATA_B2
+fi
+
+if option pkglists_b1; then
+  echo PKGLISTS_B1:
+  cd $DATA
+  pkg_lists $DATA
+fi
+
+if option sync_b2_lite; then
+  lite_sync $DATA $DATA_B2
+fi
+
+if option sync_b1; then
+  rsync -ar $DATA_B2/ $DATA
+fi
+
+if option sync_b1_lite; then
+  lite_sync $DATA_B2 $DATA
+fi
+
+make_hints_git () {
+  ! [ -d "$1" ] && mkdir "$1"
+  ret=0
+  (
+    cd "$1" || exit 1
+    if ! [ -d .git ]; then
+        git init .
+        git remote add origin "$2"
+    else
+        git config remote.origin.url "$2"
+    fi
+    git fetch origin -q
+    if git branch -q -D "$3"; then
+      git checkout --force --track -b "$3" "origin/$3"
+    else
+      git reset --hard "origin/$3"
+    fi) || ret=$?
+    if [ "$ret" != "0" ]; then
+        echo "ERROR: make_hints_git failed -- directory=$1 url=$2" 1>&2
+    fi
+    return $ret
+}
+
+sanitise_hints_kernel () {
+  if ! [ -d "$2" ]; then
+    echo "No general hints directory, ignoring." >&2
+    return
+  fi
+  if ! [ -e "$1" ]; then
+    echo "No kernel-team hints file $1 found, ignoring." >&2
+    return
+  fi
+  # Parse the existing hints files and accumulate release-team created blocks;
+  # also detect block-all source.  Then run over the kernel-team/release hints
+  # and reduce them to valid block/unblocks for approved packages which are not
+  # also blocked by the release-team.  As part of this we "flatten" the
+  # supplied blocks such that one appears per line which simplifies disabling
+  # individual packages.
+  awk -v hints="$1" '
+    # Ensure we do not consume our own output when considering blocks.
+    (FILENAME ~ "/kernel-testing") { nextfile; }
+    /^[ 	]*block[ 	]/ {
+      for (n=2; n<=NF; n++) {
+        blocks[$n]=1
+      }
+    }
+    /^[ 	]*block-all[ 	][ 	]*source/ {
+      blocks["ALL"]=1
+    }
+    END {
+      for (block in blocks) {
+        print("# RT BLOCKS " block)
+      }
+      while (getline <hints > 0) {
+        # Blocks must only be linux packages and unversioned.
+        if (/^block[ 	]/) {
+          for (n=2; n<=NF; n++) {
+            if ($n ~ "/") {
+              print("# IGNORED(bad-form): block " $n)
+            } else if ($n == "linux" || $n ~ "^linux-") {
+              print("block " $n)
+            } else {
+              print("# IGNORED(bad-package): block " $n)
+            }
+          }
+        # Unblocks must only be linux packages, versioned, and not
+        # in the manual blocks list.
+        } else if (/^unblock[ 	]/) {
+          for (n=2; n<=NF; n++) {
+            split($n, bits, "/")
+            if ("ALL" in blocks || bits[1] in blocks) {
+              print("# IGNORED(manually-blocked): unblock " $n)
+            } else if ($n ~ "^linux/" || $n ~ "^linux-[^/]*/") {
+              print("unblock " $n)
+            } else {
+              print("# IGNORED(bad-package/form): unblock " $n)
+            }
+          }
+        # Comments and blank lines are ok.
+        } else if (/^#/ || /^$/) {
+          print($0)
+        # Anything else is invalid.
+        } else {
+          print("# IGNORED(invalid-directive): " $0)
+        }
+      }
+    }
+  ' "$2/"* >"$3.new"
+  mv -f "$3.new" "$3"
+}
+
+if option hints_git; then
+  echo HINTS_GIT:
+  if [ "$DISTRIBUTION" = ubuntu ]; then
+    kernel_git_repo="git://git.launchpad.net/~ubuntu-kernel-release/britney/+git/hints-ubuntu"
+    if [ "$SERIES" = "$DEFAULT_SERIES" ]; then
+      branch="devel"
+    else
+      branch="$SERIES"
+    fi
+    make_hints_git "$DATA_B2/$SERIES-proposed/Hints" "https://git.launchpad.net/~ubuntu-release/britney/+git/hints-ubuntu" "$branch"
+    # Kernel team kernel-release hints.
+    kernel_hint_dir="$DATA_B2/$SERIES-proposed/Hints/kernel-testing-hints"
+    make_hints_git "$kernel_hint_dir" "$kernel_git_repo" "$branch"
+    sanitise_hints_kernel "$kernel_hint_dir/release" "$DATA_B2/$SERIES-proposed/Hints" "$DATA_B2/$SERIES-proposed/Hints/kernel-testing"
+  fi
+fi
+
+run_b1 () {
+  cd $UPDATE_OUT
+  ./update_out.py $TESTING $UNSTABLE $TPU
+}
+
+b2_diff () {
+    tmp_dir=`mktemp -d`
+    master="b2"
+    [ "$master" = "b1" ] && secondary="b2" || secondary="b1"
+    (cd $tmp_dir
+
+    sort $TESTING/HeidiResult >HeidiResult_b1
+    sort $B2_OUTPUT/$SERIES/HeidiResult >HeidiResult_b2
+
+    sed -e '/^<p>Generated: /d' $CODE/update_out/update.EXCUSES_py >excuses_b1.html
+    sed -e '/^<p>Generated: /d' $B2_OUTPUT/$SERIES/excuses.html >excuses_b2.html
+
+    touch -m -r $TESTING/HeidiResult HeidiResult_b1
+    touch -m -r $B2_OUTPUT/$SERIES/HeidiResult HeidiResult_b2
+
+    touch -m -r $CODE/update_out/update.EXCUSES_py excuses_b1.html
+    touch -m -r $B2_OUTPUT/$SERIES/excuses.html excuses_b2.html
+
+    # NB: If you remove the "head" below, add a "|| true"; otherwise
+    # set -e may not allow the HeidiResult diff to execute.
+    diff -u excuses_${master}.html excuses_${secondary}.html | head -n 1000
+    diff -u HeidiResult_${master} HeidiResult_${secondary} | head -n 1000)
+    rm -rf $tmp_dir
+}
+
+b2_diff_with_mail () {
+  b2_diff
+  b2_diff | ifne mail -s "britney2 diff `date -u +'%Y-%m-%d %H:%M'`" \
+    -a "Reply-To: britney2@release.debian.org" britney2@release.debian.org
+}
+
+make_b2_config () {
+    local arches archindep
+    arches=`suite_arches $SERIES`
+    archindep=`suite_archindep $SERIES`
+    adt_arches=$arches
+    sed -e "s/^\\(ARCHITECTURES  *= \\).*/\\1$arches/" \
+        -e "s/^\\(NOBREAKALL_ARCHES  *= \\).*/\\1$archindep/" \
+        -e "/^ADT_AMQP/ s@:password@:${B2_AMQP_PASSWORD//@/\\@}@" \
+        "$1" >"$2"
+
+    # only do the email thing for the default series
+    #
+    # and
+    #
+    # only do SRU regression emails for the non default series
+    if [ -n "$NO_ACT" ]; then
+        # honor a global toggle to disable side-effects (no email, no
+        # triggering tests, no archive updating)
+        sed -i '/^EMAIL_ENABLE/ s/=.*$/= no/' "$2"
+        sed -i '/^SRUREGRESSIONEMAIL_ENABLE/ s/=.*$/= no/' "$2"
+        sed -i '/^ADT_ENABLE/ s/yes/dry-run/' "$2"
+    elif [ "$SERIES" != "$DEFAULT_SERIES" ]; then
+        sed -i '/^EMAIL_ENABLE/ s/=.*$/= no/' "$2"
+        sed -i '/^SRUREGRESSIONEMAIL_ENABLE/ s/=.*$/= yes/' "$2"
+    fi
+    case $SERIES in
+	focal)
+          sed -i '/^NEW_ARCHES/ s/=.*$/= riscv64/' "$2"
+          sed -i '/^BREAK_ARCHES/ s/=.*$/= riscv64/' "$2"
+          ;;
+	# vorlon 2023-07-03 workaround for linux-restricted-modules failures
+	jammy)
+          echo "CHECK_CONSISTENCY_LEVEL = 0" >> "$2"
+          ;;
+	noble)
+          # remove riscv64 from adt_arches
+          adt_arches=$(echo $adt_arches | sed -e's/ riscv64//')
+	  ;;
+	questing)
+          # remove amd64v3 from adt_arches
+          adt_arches=$(echo $adt_arches | sed -e's/ amd64v3//')
+	  ;;
+    esac
+
+    sed -i -e"/^ADT_ARCHES/ s/=.*$/= $adt_arches/" "$2"
+}
+
+make_b2_notest_config () {
+    sed -e '/^NONINST_STATUS/ s/ *$/-notest/' \
+        -e '/^EXCUSES_.*OUTPUT/ s%=.*$%= /dev/null%' \
+        -e '/^UPGRADE_OUTPUT/ s/output.txt/output_notest.txt/' \
+        -e '/^HEIDI_OUTPUT/ s/=.*$/=/' \
+        -e '/^ADT_ENABLE/ s/yes/no/' \
+        -e '/^EMAIL_ENABLE/ s/=.*$/= no/' \
+        "$1" > "$2"
+}
+
+run_b2 () {
+  cd $BASE
+  make_b2_config "$B2_CONFIG" "$B2_CONFIG.$DISTRIBUTION.$SERIES"
+  $CODE_B2/britney.py -c "$B2_CONFIG.$DISTRIBUTION.$SERIES" -v --distribution=$DISTRIBUTION --series=$SERIES
+
+}
+
+run_notest () {
+  # for the devel series we also want an output.txt without tests, to make
+  # it easier to untangle library transitions
+  make_b2_notest_config "$B2_CONFIG.$DISTRIBUTION.$SERIES" "$B2_CONFIG.$DISTRIBUTION.$SERIES.notest"
+  $CODE_B2/britney.py -c "$B2_CONFIG.$DISTRIBUTION.$SERIES.notest" --distribution=$DISTRIBUTION --series=$SERIES >/dev/null
+  cp $DATA_B2/output/$SERIES/output_notest.txt $HTML/$SERIES/update_output_notest.txt
+}
+
+if option run; then
+  echo RUN:
+  run_b2
+fi
+
+if option run_notest; then
+  echo RUN_NOTEST:
+  run_notest
+fi
+
+if option run_b1; then
+  echo RUN_B1:
+  run_b1
+  # assume that this will have been run after a "run" which is b2
+  b2_diff_with_mail
+fi
+
+if option run_b2; then
+  echo RUN_B2:
+  run_b2
+  b2_diff_with_mail
+fi
+
+if option b2_diff; then
+    b2_diff
+fi
+
+lp_import() {
+  # tell LP about the new delta
+  promote-to-release -l "$LP_SERVICE" -d "$DISTRIBUTION" -s "$SERIES" -v "$1"
+}
+
+save () {
+  cd $BASE
+  echo RESULTS:
+  # process a delta
+  if [ "$1" = "b1" ]; then
+    DELTA="$TESTING/HeidiResultDelta"
+  else
+    DELTA="$B2_OUTPUT/$SERIES/HeidiResultDelta"
+  fi
+  echo Using data from $DELTA
+  lp_import "$DELTA"
+  printf " done\n"
+}
+
+if [ -z "$NO_ACT" ]; then
+    if option save_b1; then
+        save b1
+    fi
+    if option save || option save_b2; then
+        save b2
+    fi
+fi
+
+create_uninst_report () {
+    if qoption run; then
+        # use cached results
+        # except this causes us to only report the summary, not the affected packages?
+        #cache_option=--nuninst-cache
+        cache_option=
+    fi
+    $CODE_B2/britney.py -c $1 --distribution=$DISTRIBUTION --series=$SERIES --print-uninst $cache_option >$HTML/$2.new
+    echo -e "\n# Generated: `date -uR`" >>$HTML/$2.new
+    mv $HTML/$2.new $HTML/$2
+}
+
+create_ood_report () {
+    $SCRIPTS/ood_report.py $1 >$HTML/$2.new
+    echo -e "\n# Generated: `date -uR`" >>$HTML/$2.new
+    mv $HTML/$2.new $HTML/$2
+}
+
+stats () {
+  echo STATS:
+  mkdir -p "$HTML/$SERIES"
+  if [ "$1" = "b1" ]; then
+    cp $UPDATE_OUT/update.EXCUSES_py $HTML/$SERIES/update_excuses.html
+    cp $UPDATE_OUT/update.OUTPUT_py $HTML/$SERIES/update_output.txt
+  else
+    cp $DATA_B2/output/$SERIES/excuses.html $HTML/$SERIES/update_excuses.html
+    cp $DATA_B2/output/$SERIES/excuses.yaml.xz $HTML/$SERIES/update_excuses.yaml.xz
+    cp $DATA_B2/output/$SERIES/output.txt $HTML/$SERIES/update_output.txt
+    if ! [ -e $DATA_B2/output/$SERIES/output_notest.txt ]; then
+        rm -f $HTML/$SERIES/update_output_notest.txt
+    fi
+    cp $DATA_B2/$SERIES-proposed/Blocks $HTML/$SERIES/blocks.txt
+    cp $DATA_B2/$SERIES-proposed/ExcuseBugs $HTML/$SERIES/excuse-bugs.txt || true
+  fi
+  #gzip -9 < $HTML/$SERIES/update_excuses.html > $HTML/$SERIES/update_excuses.html.gz
+  #gzip -9 < $HTML/$SERIES/update_output.txt > $HTML/$SERIES/update_output.txt.gz
+  mkdir -p "$HTML/update_output/$SERIES/${NOW%/*}"
+  mkdir -p "$HTML/update_excuses/$SERIES/${NOW%/*}"
+  gzip -9c $HTML/$SERIES/update_output.txt > $HTML/update_output/$SERIES/$NOW.txt.gz
+  gzip -9c $HTML/$SERIES/update_excuses.html > $HTML/update_excuses/$SERIES/$NOW.html.gz
+  cp $HTML/$SERIES/update_excuses.yaml.xz $HTML/update_excuses/$SERIES/$NOW.yaml.xz
+
+  # TODO: {stable,unstable}_uninst.txt -- needs support in b2, talk to Fabio
+  # TODO: this creates uninstallability reports against b2 results, not b1's
+  make_b2_config "$B2_CONFIG" "$B2_CONFIG.$DISTRIBUTION.$SERIES"
+  create_uninst_report "$B2_CONFIG.$DISTRIBUTION.$SERIES" ${SERIES}_uninst.txt
+
+  #if grep -q -e '-meta-faux' $HTML/testing_uninst.txt; then
+  #  echo >&2 'Warning! Some -meta-faux package is uninstallable!'
+  #fi
+
+  if [ "$SERIES" = "$DEFAULT_SERIES" ]; then
+    create_ood_report $DATA_B2/${SERIES} ${SERIES}_outdate.txt
+    create_ood_report $DATA_B2/${SERIES}-proposed ${SERIES}-proposed_outdate.txt
+  fi
+
+  $SCRIPTS/backlog-report -o $HTML/$SERIES/update_excuses.csv $HTML/$SERIES/update_excuses.html
+}
+
+if option stats_b1; then
+  stats b1
+fi
+if option stats || option stats_b2; then
+  stats b2
+fi
+
+if option summary; then
+  cd $BASE
+  echo "Out of dates holding up testing:"
+  TERM=vt100 w3m -dump $HTML/$SERIES/update_excuses.html | sed -n 's/^ *[^ ] *[^ ]*out of date on \([^ ]*\): .*$/\1/p' | sort | uniq -c | sort -n
+  echo "Uninstallables holding up testing:"
+  sed < $HTML/$SERIES/update_excuses.html -n 's/^ *<li>[^ ]* (\([^, ]*\),.*) uninstallable.*$/\1/p' | sort | uniq -c | sort -n
+  #echo "wanna-build stats:"
+  #for a in alpha arm hppa hurd-i386 i386 ia64 m68k mips mipsel powerpc s390 sparc; do
+  #  printf "  %-12s " "$a:"
+  #  /srv/wanna-build/bin/wanna-build-statistics --database=$a/build-db | 
+  #    grep "if also counting" || echo "-"
+  #done
+fi
+
+if option archivedata; then
+  echo ARCHIVE:
+  cd $VAR
+  tar czf data_bkup/data-$(date +"%Y.%m.%d").tgz data/{stable,testing,unstable,testing-proposed-updates}
+fi
+
+echo -n "Finished at: "; date -uR

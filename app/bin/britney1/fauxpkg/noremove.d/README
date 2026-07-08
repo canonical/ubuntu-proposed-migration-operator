@@ -1,0 +1,3 @@
+Packages listed in these files are protected against accidental removals
+from testing. Please mail debian-release@lists.debian.org if you think
+some package should be added to any of these lists.

@@ -1,0 +1,50 @@
+Files and scripts in this directory are in charge on creating a list of
+"faux" packages for britney. These are packages that do not exist in the
+archive, but which we want britney to think they exist. At the moment
+they are used for:
+
+  - allowing packages in contrib to migrate even if their dependencies
+    are not satisfied within the archive. This is done by creating a
+    faux package for each missing dependency.
+
+  - ensure some packages do not get accidentally removed, because they
+    are needed by parts of testing which don't declare a Depends on
+    them. In particular, to ensure packages needed by the installer and
+    tasksel are not removed. This is done by creating faux packages that
+    do depend on all packages which are not to be removed.
+
+To create packages of the first kind, just append suitable entries to
+the toplevel FauxPackages file. These should have at least a Package and
+Version fields. You can restrict their existance to certain architectures
+by providing an Architecture field with a list of architectures. Other
+fields are propagated verbatim to britney, eg. Provides.
+
+As for the second kind, you don't directly create faux packages, but
+just append the packages which shouldn't be removed to the appropriate
+file under the "noremove.d" directory. Those files just contain a list
+of *binary* packages, one per line. A couple of important notes:
+
+  - if the binary package is not in testing, do not add it: wait until
+    it migrates.
+
+  - if the binary package is not available on i386 (being arch:all would
+    suffice), you have to qualify it with [arch], mentioning one arch in
+    which it is available.
+
+  - the names of the files under noremove.d must be valid as package
+    names, e.g. not contain underscores.
+
+The noremove.d/tasksel file is special: it gets generated automatically
+by the fauxpkg.py script, by running the script with the "update-tasksel"
+command. (Currently is it to be run by hand whenever the tasksel
+maintainer notices our file is out of date.)
+
+One further caveat: if one of these faux meta-packages becomes uninstallable,
+they stop working (since the removal of their dependencies does not increase
+the uninstallability count). The britney script has a mechanism in place to
+warn in case they become uninstallable. When adding packages to the lists,
+make sure to watch the next britney mail, in case you added conflicting
+packages. (In that case, you want to add such packages in different files
+under noremove.d.)
+
+Please don't forget to commit your changes to files in this directory!

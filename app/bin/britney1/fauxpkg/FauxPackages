@@ -1,0 +1,60 @@
+Package: wine1.4-i386
+Source: wine1.6
+Version: ${unstable-version}
+Architecture: amd64
+Provides: wine-i386
+Multi-Arch: foreign
+
+Package: wine1.6-i386
+Source: wine1.6
+Version: ${unstable-version}
+Architecture: amd64
+Provides: wine-i386
+Multi-Arch: foreign
+
+Package: ocaml-mingw-w64-x86-64
+Source: mingw-ocaml
+Version: ${unstable-version}
+Architecture: i386
+Multi-Arch: foreign
+
+Package: claws-mail-extra-plugins-dbg
+Version: 1:1
+
+Package: claws-mail-html2-viewer
+Version: 1:1
+
+Package: ubuntu-emulator-images
+Source: android
+Version: ${unstable-version}
+Architecture: amd64 armhf
+Multi-Arch: foreign
+
+Package: ubuntu-emulator-runtime
+Source: android
+Version: ${unstable-version}
+Architecture: amd64 armhf
+Multi-Arch: foreign
+
+Package: unity8
+Version: ${unstable-version}
+Architecture: powerpc ppc64el s390x
+
+Package: liboxideqt-qmlplugin
+Source: oxide-qt
+Version: ${unstable-version}
+Architecture: powerpc ppc64el s390x
+
+Package: steam
+Version: ${unstable-version}
+Architecture: amd64
+Multi-Arch: foreign
+
+Package: steam-libs-i386
+Source: steam-installer
+Version: ${unstable-version}
+Architecture: amd64
+
+Package: steam-installer
+Version: ${unstable-version}
+Architecture: i386

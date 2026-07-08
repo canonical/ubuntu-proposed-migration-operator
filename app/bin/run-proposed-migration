@@ -36,12 +36,11 @@ cleanup () {
     [ -n "$tmpdir" ] && rm -rf "$tmpdir"
 }
 trap cleanup EXIT HUP INT QUIT TERM
-(cd "$HOME/proposed-migration/code/b1"; git fetch origin; git reset --hard --quiet origin/main)
 (cd "$HOME/proposed-migration/code/b2"; git fetch origin; git reset --hard --quiet origin/master)
 logfile="log/$full_series/$(date -u +%F/%T).log"
 mkdir -p "${logfile%/*}"
 
-code/b1/britney $actions >"$logfile" 2>&1
+britney $actions >"$logfile" 2>&1
 if [ "$SERIES" = "$DEFAULT_SERIES" ]; then
     cd ~/public_html/proposed-migration/
     generate-team-p-m --excuses-yaml $SERIES/update_excuses.yaml.xz \

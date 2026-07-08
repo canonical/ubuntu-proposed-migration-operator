@@ -20,4 +20,4 @@ trap cleanup EXIT HUP INT QUIT TERM
 logfile="log/$SERIES/$(date -u +%F/%T).notest.log"
 mkdir -p "${logfile%/*}"
 
-code/b1/britney run_notest >"$logfile" 2>&1
+britney run_notest >"$logfile" 2>&1
