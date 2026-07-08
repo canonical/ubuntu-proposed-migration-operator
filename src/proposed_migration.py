@@ -30,12 +30,19 @@ BRITNEY2_BRANCH = "master"
 # britney expects a *bunch* of magic directories to be present
 BRITNEY_DIRS = [
     PROPOSED_MIGRATION_PATH / "d-i",
+    PROPOSED_MIGRATION_PATH / "data",
     PROPOSED_MIGRATION_PATH / "var",
     PROPOSED_MIGRATION_PATH / "var" / "lock",
-    PROPOSED_MIGRATION_PATH / "var" / "data",
     PROPOSED_MIGRATION_PATH / "ssh",
     PROPOSED_MIGRATION_PATH / "Heidi",
     PROPOSED_MIGRATION_PATH / "input",
+]
+
+# britney also expects these symlinks, format (link_name, target)
+BRITNEY_SYMLINKS = [
+    (PROPOSED_MIGRATION_PATH / "var" / "data-b2", PROPOSED_MIGRATION_PATH / "data"),
+    (PROPOSED_MIGRATION_PATH / "log", PUBLIC_HTML_PATH / "proposed-migration" / "log"),
+    (PROPOSED_MIGRATION_PATH / "data" / "output", PROPOSED_MIGRATION_PATH / "output"),
 ]
 
 DEB_DEPENDENCIES = [
@@ -111,6 +118,12 @@ def create_directories():
         # use run_as_user instead of Path.mkdir
         # for appropriate permissions
         run_as_user(f"mkdir -p {directory}")
+    logger.info("creating symlinks")
+    for link, target in BRITNEY_SYMLINKS:
+        if not Path(link).exists():
+            # use run_as_user instead of Path.symlink_to
+            # for appropriate permissions
+            run_as_user(f"ln -s {target} {link}")
 
 def clone_repositories():
     logger.info("cloning repositories")
