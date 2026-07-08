@@ -30,7 +30,6 @@ NOW=`date +"%F/%T" -u`
 
 # Dirs:
 BASE=$HOME/proposed-migration
-DAK_LOCKDIR=/srv/ftp-master.debian.org/lock
 FTP_MIRROR=$HOME/mirror/$DISTRIBUTION
 
 # Special variable to switch britney into a no-action mode
@@ -48,16 +47,12 @@ LOCKDIR=$VAR/lock
 HEIDI_SET=$HEIDI/set
 SCRIPTS=$CODE/scripts
 FAUXDIR=$CODE/fauxpkg
-UPDATE_OUT=$CODE/update_out
-URGENCIES=$INPUT/urgencies
 
 LOCK=$LOCKDIR/britney-$DISTRIBUTION-$SERIES.lock
 # allow a notest-only run to run in parallel under a different lock
 if [ "$OPTIONS" = run_notest ]; then
     LOCK=$LOCKDIR/britney-$DISTRIBUTION-$SERIES-notest.lock
 fi
-DAK_LOCK=$DAK_LOCKDIR/daily.lock
-DAK_STOP=$DAK_LOCKDIR/archive.stop
 
 TESTING=$DATA/$SERIES
 UNSTABLE=$DATA/$SERIES-proposed
@@ -79,11 +74,6 @@ B2_OUTPUT=$DATA_B2/output
 B2_CONFIG=${B2_CONFIG:-$CODE_B2/britney.conf}
 B2_AMQP_PASSWORD="$(cat $BASE/amqp-password.txt)"
 
-if [ -f $DAK_STOP ]; then
-  echo "$DAK_STOP exists, not running"
-  exit 1
-fi
-
 # 10800 seconds = 3 hours
 # 129600 seconds = 36 hours
 if ! lockfile -r0 -l129600 $LOCK 2>/dev/null >/dev/null; then
@@ -97,7 +87,6 @@ exit_function () {
     rm -f $LOCK
 }
 
-#eval $( dak admin config db-shell )
 
 suite_info () {
     timeout 60 $SCRIPTS/get_suite_info.py  "$LP_SERVICE" "$DISTRIBUTION" "$1" "$2"
@@ -110,49 +99,6 @@ suite_arches () {
 suite_archindep () {
     suite_info "$1" "archindep" || exit 1
 }
-
-if ! qoption allowdaklock; then
-	while [ -f $DAK_LOCK ]; do
-		echo `date` $DAK_LOCK exists.  Sleeping in 10 more minutes.
-		sleep 600
-	done
-fi
-
-urgencies () {
-  echo URGENCIES:
-  cd $BASE
-  for u in $URGENCIES/install-urgencies-*; do
-    [ -e "$u" ] || continue
-    cat "$u" >> $1/$SERIES/Urgency # XXX I'd rather not have this in $DATA --dato
-    rm "$u"
-  done
-}
-
-if option urgencies; then
-  urgencies $DATA_B2
-fi
-
-bugs () {
-  for suite in $SERIES $SERIES-proposed; do
-    x="$1/${suite}/BugsV"
-    wget --quiet -O "${x}.new" http://bugs.debian.org/release-critical/britney/${suite}-nr
-    if [ -s ${x}.new ]; then mv ${x}.new $x; else rm $x.new; exit 1; fi
-  done
-}
-if option bugs; then
-  echo BUGS:
-  bugs $DATA_B2
-fi
-
-if option bugs_b1; then
-  echo BUGS_B1:
-  bugs $DATA
-fi
-
-if option bugs_b2; then
-  echo BUGS_B2:
-  bugs $DATA_B2
-fi
 
 excuse_bugs() {
   tagged_bugs $1 update-excuse ExcuseBugs
@@ -211,50 +157,10 @@ pkg_lists () {
   $FAUXPKG_SCRIPT generate $1/$SERIES $1/$SERIES-proposed
 }
 
-lite_sync () {
-  cat <<EOF | rsync -a --files-from=- $1 $2
-$SERIES/Dates
-$SERIES/BugsV
-$SERIES/Urgency
-$SERIES-proposed/BugsV
-$SERIES-proposed/Hints
-EOF
-
-}
-
 if option pkglists; then
   echo PKGLISTS:
   cd $DATA_B2
   pkg_lists $DATA_B2
-fi
-
-if option sync_b2; then
-  rsync -ar $DATA/ $DATA_B2
-fi
-
-# Give options to run a b2 from scratch after b1 has finished
-if option pkglists_b2; then
-  echo PKGLISTS_B2:
-  cd $DATA_B2
-  pkg_lists $DATA_B2
-fi
-
-if option pkglists_b1; then
-  echo PKGLISTS_B1:
-  cd $DATA
-  pkg_lists $DATA
-fi
-
-if option sync_b2_lite; then
-  lite_sync $DATA $DATA_B2
-fi
-
-if option sync_b1; then
-  rsync -ar $DATA_B2/ $DATA
-fi
-
-if option sync_b1_lite; then
-  lite_sync $DATA_B2 $DATA
 fi
 
 make_hints_git () {
@@ -351,7 +257,6 @@ sanitise_hints_kernel () {
 if option hints_git; then
   echo HINTS_GIT:
   if [ "$DISTRIBUTION" = ubuntu ]; then
-    # temporarily use https for this repo because the git:// protocol is blocked by firewall on PS7
     kernel_git_repo="https://git.launchpad.net/~ubuntu-kernel-release/britney/+git/hints-ubuntu"
     hints_git_repo="https://git.launchpad.net/~ubuntu-release/britney/+git/hints-ubuntu"
     if [ "$SERIES" = "$DEFAULT_SERIES" ]; then
@@ -366,42 +271,6 @@ if option hints_git; then
     sanitise_hints_kernel "$kernel_hint_dir/release" "$DATA_B2/$SERIES-proposed/Hints" "$DATA_B2/$SERIES-proposed/Hints/kernel-testing"
   fi
 fi
-
-run_b1 () {
-  cd $UPDATE_OUT
-  ./update_out.py $TESTING $UNSTABLE $TPU
-}
-
-b2_diff () {
-    tmp_dir=`mktemp -d`
-    master="b2"
-    [ "$master" = "b1" ] && secondary="b2" || secondary="b1"
-    (cd $tmp_dir
-
-    sort $TESTING/HeidiResult >HeidiResult_b1
-    sort $B2_OUTPUT/$SERIES/HeidiResult >HeidiResult_b2
-
-    sed -e '/^<p>Generated: /d' $CODE/update_out/update.EXCUSES_py >excuses_b1.html
-    sed -e '/^<p>Generated: /d' $B2_OUTPUT/$SERIES/excuses.html >excuses_b2.html
-
-    touch -m -r $TESTING/HeidiResult HeidiResult_b1
-    touch -m -r $B2_OUTPUT/$SERIES/HeidiResult HeidiResult_b2
-
-    touch -m -r $CODE/update_out/update.EXCUSES_py excuses_b1.html
-    touch -m -r $B2_OUTPUT/$SERIES/excuses.html excuses_b2.html
-
-    # NB: If you remove the "head" below, add a "|| true"; otherwise
-    # set -e may not allow the HeidiResult diff to execute.
-    diff -u excuses_${master}.html excuses_${secondary}.html | head -n 1000
-    diff -u HeidiResult_${master} HeidiResult_${secondary} | head -n 1000)
-    rm -rf $tmp_dir
-}
-
-b2_diff_with_mail () {
-  b2_diff
-  b2_diff | ifne mail -s "britney2 diff `date -u +'%Y-%m-%d %H:%M'`" \
-    -a "Reply-To: britney2@release.debian.org" britney2@release.debian.org
-}
 
 make_b2_config () {
     local arches archindep
@@ -485,23 +354,6 @@ if option run_notest; then
   run_notest
 fi
 
-if option run_b1; then
-  echo RUN_B1:
-  run_b1
-  # assume that this will have been run after a "run" which is b2
-  b2_diff_with_mail
-fi
-
-if option run_b2; then
-  echo RUN_B2:
-  run_b2
-  b2_diff_with_mail
-fi
-
-if option b2_diff; then
-    b2_diff
-fi
-
 lp_import() {
   # tell LP about the new delta
   promote-to-release -l "$LP_SERVICE" -d "$DISTRIBUTION" -s "$SERIES" -v "$1"
@@ -511,21 +363,14 @@ save () {
   cd $BASE
   echo RESULTS:
   # process a delta
-  if [ "$1" = "b1" ]; then
-    DELTA="$TESTING/HeidiResultDelta"
-  else
-    DELTA="$B2_OUTPUT/$SERIES/HeidiResultDelta"
-  fi
+  DELTA="$B2_OUTPUT/$SERIES/HeidiResultDelta"
   echo Using data from $DELTA
   lp_import "$DELTA"
   printf " done\n"
 }
 
 if [ -z "$NO_ACT" ]; then
-    if option save_b1; then
-        save b1
-    fi
-    if option save || option save_b2; then
+    if option save; then
         save b2
     fi
 fi
@@ -551,19 +396,14 @@ create_ood_report () {
 stats () {
   echo STATS:
   mkdir -p "$HTML/$SERIES"
-  if [ "$1" = "b1" ]; then
-    cp $UPDATE_OUT/update.EXCUSES_py $HTML/$SERIES/update_excuses.html
-    cp $UPDATE_OUT/update.OUTPUT_py $HTML/$SERIES/update_output.txt
-  else
-    cp $DATA_B2/output/$SERIES/excuses.html $HTML/$SERIES/update_excuses.html
-    cp $DATA_B2/output/$SERIES/excuses.yaml.xz $HTML/$SERIES/update_excuses.yaml.xz
-    cp $DATA_B2/output/$SERIES/output.txt $HTML/$SERIES/update_output.txt
-    if ! [ -e $DATA_B2/output/$SERIES/output_notest.txt ]; then
-        rm -f $HTML/$SERIES/update_output_notest.txt
-    fi
-    cp $DATA_B2/$SERIES-proposed/Blocks $HTML/$SERIES/blocks.txt
-    cp $DATA_B2/$SERIES-proposed/ExcuseBugs $HTML/$SERIES/excuse-bugs.txt || true
+  cp $DATA_B2/output/$SERIES/excuses.html $HTML/$SERIES/update_excuses.html
+  cp $DATA_B2/output/$SERIES/excuses.yaml.xz $HTML/$SERIES/update_excuses.yaml.xz
+  cp $DATA_B2/output/$SERIES/output.txt $HTML/$SERIES/update_output.txt
+  if ! [ -e $DATA_B2/output/$SERIES/output_notest.txt ]; then
+  rm -f $HTML/$SERIES/update_output_notest.txt
   fi
+  cp $DATA_B2/$SERIES-proposed/Blocks $HTML/$SERIES/blocks.txt
+  cp $DATA_B2/$SERIES-proposed/ExcuseBugs $HTML/$SERIES/excuse-bugs.txt || true
   #gzip -9 < $HTML/$SERIES/update_excuses.html > $HTML/$SERIES/update_excuses.html.gz
   #gzip -9 < $HTML/$SERIES/update_output.txt > $HTML/$SERIES/update_output.txt.gz
   mkdir -p "$HTML/update_output/$SERIES/${NOW%/*}"
@@ -589,10 +429,7 @@ stats () {
   $SCRIPTS/backlog-report -o $HTML/$SERIES/update_excuses.csv $HTML/$SERIES/update_excuses.html
 }
 
-if option stats_b1; then
-  stats b1
-fi
-if option stats || option stats_b2; then
+if option stats; then
   stats b2
 fi
 
@@ -602,12 +439,6 @@ if option summary; then
   TERM=vt100 w3m -dump $HTML/$SERIES/update_excuses.html | sed -n 's/^ *[^ ] *[^ ]*out of date on \([^ ]*\): .*$/\1/p' | sort | uniq -c | sort -n
   echo "Uninstallables holding up testing:"
   sed < $HTML/$SERIES/update_excuses.html -n 's/^ *<li>[^ ]* (\([^, ]*\),.*) uninstallable.*$/\1/p' | sort | uniq -c | sort -n
-  #echo "wanna-build stats:"
-  #for a in alpha arm hppa hurd-i386 i386 ia64 m68k mips mipsel powerpc s390 sparc; do
-  #  printf "  %-12s " "$a:"
-  #  /srv/wanna-build/bin/wanna-build-statistics --database=$a/build-db | 
-  #    grep "if also counting" || echo "-"
-  #done
 fi
 
 if option archivedata; then
