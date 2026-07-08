@@ -77,13 +77,13 @@ def is_proxy_defined():
 def install_scripts():
     logger.info("installing scripts")
     scripts_path = CHARM_APP_DATA / "bin"
-    britney_path = CHARM_APP_DATA / "britney1"
+    runner_path = CHARM_APP_DATA / "britney1"
     shutil.copytree(scripts_path, "/usr/local/bin", dirs_exist_ok=True)
-    shutil.copytree(britney_path, BRITNEY1_LOCATION, dirs_exist_ok=True)
+    shutil.copytree(runner_path, BRITNEY1_LOCATION, dirs_exist_ok=True)
     # create a symlink to the britney script from /usr/local/bin so that it can be run from anywhere
     logger.info("creating symlink for britney script")
-    britney_script = BRITNEY1_LOCATION / "britney"
-    Path("/usr/local/bin/britney").symlink_to(britney_script)
+    runner_script = BRITNEY1_LOCATION / "britney"
+    Path("/usr/local/bin/britney").symlink_to(runner_script)
 
 def install_systemd_units():
     logger.info("installing systemd units")

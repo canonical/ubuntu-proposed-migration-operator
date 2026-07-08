@@ -29,9 +29,9 @@ SERIES="${SERIES:-$DEFAULT_SERIES}"
 NOW=`date +"%F/%T" -u`
 
 # Dirs:
-BASE=/home/ubuntu-archive/proposed-migration
+BASE=$HOME/proposed-migration
 DAK_LOCKDIR=/srv/ftp-master.debian.org/lock
-FTP_MIRROR=/home/ubuntu-archive/mirror/$DISTRIBUTION
+FTP_MIRROR=$HOME/mirror/$DISTRIBUTION
 
 # Special variable to switch britney into a no-action mode
 NO_ACT=${NO_ACT:-}
@@ -66,11 +66,11 @@ TPU=$DATA/testing-proposed-updates
 FAUXPKG_SCRIPT=$FAUXDIR/fauxpkg.py
 SSH_KEY=$SSH/ftp-master_trigger_key
 
-HTML=/home/ubuntu-archive/public_html/proposed-migration
+HTML=$HOME/public_html/proposed-migration
 if [ "$DISTRIBUTION" != ubuntu ]; then
     HTML="$HTML/$DISTRIBUTION"
 fi
-BOOTSTRAP_DIR=/home/ubuntu-archive/public_html/bootstrap
+BOOTSTRAP_DIR=$HOME/public_html/bootstrap
 
 # Britney 2
 DATA_B2=$VAR/data-b2
@@ -100,39 +100,15 @@ exit_function () {
 #eval $( dak admin config db-shell )
 
 suite_info () {
-    timeout 60 python3 -c '
-from __future__ import print_function
-
-import os
-import sys
-
-from launchpadlib.launchpad import Launchpad as _Launchpad
-
-# Work around non-multiple-instance-safety of launchpadlib (bug #459418).
-class Launchpad(_Launchpad):
-    @classmethod
-    def _get_paths(cls, service_root, launchpadlib_dir=None):
-        service_root, launchpadlib_dir, cache_path, service_root_dir = (
-            _Launchpad._get_paths(
-                service_root, launchpadlib_dir=launchpadlib_dir))
-        cache_path += "-proposed-migration"
-        if not os.path.exists(cache_path):
-            os.makedirs(cache_path, 0o700)
-        return service_root, launchpadlib_dir, cache_path, service_root_dir
-
-launchpad = Launchpad.login_anonymously("proposed-migration", sys.argv[1])
-distro = launchpad.distributions[sys.argv[2]]
-series_name = sys.argv[3].split("-")[0]
-series = distro.getSeries(name_or_version=series_name)
-'"$1" "$LP_SERVICE" "$DISTRIBUTION" "$2"
+    timeout 60 $SCRIPTS/get_suite_info.py  "$LP_SERVICE" "$DISTRIBUTION" "$1" "$2"
 }
 
 suite_arches () {
-    suite_info 'print(" ".join(arch.architecture_tag for arch in series.architectures))' "$1" || exit 1
+    suite_info "$1" "arches" || exit 1
 }
 
 suite_archindep () {
-    suite_info 'print(series.nominatedarchindep.architecture_tag)' "$1" || exit 1
+    suite_info "$1" "archindep" || exit 1
 }
 
 if ! qoption allowdaklock; then
@@ -197,66 +173,8 @@ tagged_bugs () {
   else
     tags="$tag_template-$SERIES"
   fi
-  timeout 1800 python3 -c '
-from __future__ import print_function
-
-import calendar
-import os
-import sys
-try:
-    from urllib.parse import urlsplit
-except ImportError:
-    from urlparse import urlsplit
-
-from launchpadlib.launchpad import Launchpad as _Launchpad
-
-# Work around non-multiple-instance-safety of launchpadlib (bug #459418).
-class Launchpad(_Launchpad):
-    @classmethod
-    def _get_paths(cls, service_root, launchpadlib_dir=None):
-        service_root, launchpadlib_dir, cache_path, service_root_dir = (
-            _Launchpad._get_paths(
-                service_root, launchpadlib_dir=launchpadlib_dir))
-        cache_path += "-proposed-migration"
-        if not os.path.exists(cache_path):
-            os.makedirs(cache_path, 0o700)
-        return service_root, launchpadlib_dir, cache_path, service_root_dir
-
-launchpad = Launchpad.login_with("proposed-migration", sys.argv[1])
-distro = launchpad.distributions[sys.argv[2]]
-tags = sys.argv[3].split()
-series = distro.getSeries(name_or_version=sys.argv[4])
-blocks = set()
-tasks = list(series.searchTasks(omit_targeted=False, tags=tags))
-tasks += list(distro.searchTasks(omit_targeted=False, tags=tags))
-block_detail = {}
-for task in tasks:
-    target = task.target
-    bug = task.bug
-    if urlsplit(target.resource_type_link).fragment in (
-            "distribution_source_package", "source_package"):
-        date = block_detail.get(bug.id)
-        if date is None:
-            for action in reversed(
-                    [a for a in bug.activity if a.whatchanged == "tags"]):
-                oldtags = action.oldvalue.split()
-                newtags = action.newvalue.split()
-                gained_block = False
-                for tag in tags:
-                    if tag not in oldtags and tag in newtags:
-                        gained_block = True
-                        break
-                if gained_block:
-                    date = action.datechanged
-                    break
-            else:
-                date = bug.date_created
-            block_detail[bug.id] = date
-        blocks.add("%s %d %d" %
-              (os.path.basename(target.self_link), bug.id,
-               calendar.timegm(date.timetuple())))
-print("\n".join(sorted(blocks)))
-' "$LP_SERVICE" "$DISTRIBUTION" "$tags" "$SERIES" >"$1/$SERIES-proposed/$output_file.new"
+  timeout 1800 $SCRIPTS/get_tagged_bugs.py \
+    "$LP_SERVICE" "$DISTRIBUTION" "$tags" "$SERIES" --output "$1/$SERIES-proposed/$output_file.new"
   mv "$1/$SERIES-proposed/$output_file.new" "$1/$SERIES-proposed/$output_file"
 }
 if option blocks; then
@@ -433,13 +351,15 @@ sanitise_hints_kernel () {
 if option hints_git; then
   echo HINTS_GIT:
   if [ "$DISTRIBUTION" = ubuntu ]; then
-    kernel_git_repo="git://git.launchpad.net/~ubuntu-kernel-release/britney/+git/hints-ubuntu"
+    # temporarily use https for this repo because the git:// protocol is blocked by firewall on PS7
+    kernel_git_repo="https://git.launchpad.net/~ubuntu-kernel-release/britney/+git/hints-ubuntu"
+    hints_git_repo="https://git.launchpad.net/~ubuntu-release/britney/+git/hints-ubuntu"
     if [ "$SERIES" = "$DEFAULT_SERIES" ]; then
       branch="devel"
     else
       branch="$SERIES"
     fi
-    make_hints_git "$DATA_B2/$SERIES-proposed/Hints" "https://git.launchpad.net/~ubuntu-release/britney/+git/hints-ubuntu" "$branch"
+    make_hints_git "$DATA_B2/$SERIES-proposed/Hints" "$hints_git_repo" "$branch"
     # Kernel team kernel-release hints.
     kernel_hint_dir="$DATA_B2/$SERIES-proposed/Hints/kernel-testing-hints"
     make_hints_git "$kernel_hint_dir" "$kernel_git_repo" "$branch"
