@@ -21,7 +21,7 @@ def parse_args():
     return parser.parse_args()
 
 def main(lp_service, distribution, tags, series, output):
-    launchpad = Launchpad.login_with("proposed-migration", lp_service)
+    launchpad = Launchpad.login_anonymously("proposed-migration", lp_service)
     distro = launchpad.distributions[distribution]
     tags = tags.split()
     series = distro.getSeries(name_or_version=series)
