@@ -148,6 +148,8 @@ def clone_repositories():
 def install_proxy():
     if not is_proxy_defined():
         return
+    # the rsync_proxy needs to be constructed manually
+    rsync_proxy = os.getenv("JUJU_CHARM_HTTP_PROXY", "").replace("http://", "")
     logger.info("installing proxy environment file")
     Path("/etc/environment.d").mkdir(exist_ok=True)
     with open("/etc/environment.d/proxy.conf", "w") as file:
@@ -157,6 +159,7 @@ def install_proxy():
                 http_proxy={os.getenv("JUJU_CHARM_HTTP_PROXY", "")}
                 https_proxy={os.getenv("JUJU_CHARM_HTTPS_PROXY", "")}
                 no_proxy={os.getenv("JUJU_CHARM_NO_PROXY", "")}
+                rsync_proxy={rsync_proxy}
                 """
             )
         )
@@ -164,6 +167,7 @@ def install_proxy():
     os.environ["http_proxy"] = os.getenv("JUJU_CHARM_HTTP_PROXY", "")
     os.environ["https_proxy"] = os.getenv("JUJU_CHARM_HTTPS_PROXY", "")
     os.environ["no_proxy"] = os.getenv("JUJU_CHARM_NO_PROXY", "")
+    os.environ["rsync_proxy"] = rsync_proxy
 
 def install():
     """Install proposed migration charm."""
