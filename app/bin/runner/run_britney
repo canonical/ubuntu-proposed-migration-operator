@@ -65,7 +65,6 @@ HTML=$HOME/public_html/proposed-migration
 if [ "$DISTRIBUTION" != ubuntu ]; then
     HTML="$HTML/$DISTRIBUTION"
 fi
-BOOTSTRAP_DIR=$HOME/public_html/bootstrap
 
 # Britney 2
 DATA_B2=$VAR/data-b2
@@ -382,20 +381,6 @@ stats () {
 
 if option stats; then
   stats b2
-fi
-
-if option summary; then
-  cd $BASE
-  echo "Out of dates holding up testing:"
-  TERM=vt100 w3m -dump $HTML/$SERIES/update_excuses.html | sed -n 's/^ *[^ ] *[^ ]*out of date on \([^ ]*\): .*$/\1/p' | sort | uniq -c | sort -n
-  echo "Uninstallables holding up testing:"
-  sed < $HTML/$SERIES/update_excuses.html -n 's/^ *<li>[^ ]* (\([^, ]*\),.*) uninstallable.*$/\1/p' | sort | uniq -c | sort -n
-fi
-
-if option archivedata; then
-  echo ARCHIVE:
-  cd $VAR
-  tar czf data_bkup/data-$(date +"%Y.%m.%d").tgz data/{stable,testing,unstable,testing-proposed-updates}
 fi
 
 echo -n "Finished at: "; date -uR
