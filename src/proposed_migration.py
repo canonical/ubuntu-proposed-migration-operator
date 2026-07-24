@@ -25,6 +25,8 @@ BRITNEY2_REPO = "https://git.launchpad.net/~ubuntu-release/britney/+git/britney2
 BRITNEY2_LOCATION = PROPOSED_MIGRATION_PATH / "code" / "b2"
 BRITNEY2_BRANCH = "master"
 
+SCRIPTS_DEST = Path("/usr/local/bin")
+
 # britney expects a *bunch* of magic directories to be present
 BRITNEY_DIRS = [
     PROPOSED_MIGRATION_PATH / "d-i",
@@ -77,13 +79,13 @@ def is_proxy_defined():
 def install_scripts():
     logger.info("installing scripts")
     scripts_path = CHARM_APP_DATA / "bin"
-    runner_path = CHARM_APP_DATA / "britney1"
-    shutil.copytree(scripts_path, "/usr/local/bin", dirs_exist_ok=True)
-    shutil.copytree(runner_path, BRITNEY1_LOCATION, dirs_exist_ok=True)
-    # create a symlink to the britney script from /usr/local/bin so that it can be run from anywhere
+    runner_path = scripts_path / "runner"
+    shutil.copytree(scripts_path, SCRIPTS_DEST, symlinks=True, dirs_exist_ok=True)
+    shutil.copytree(runner_path, BRITNEY1_LOCATION, symlinks=True, dirs_exist_ok=True)
     logger.info("creating symlink for run_britney script")
     runner_script = BRITNEY1_LOCATION / "run_britney"
-    Path("/usr/local/bin/britney").symlink_to(runner_script)
+    if not SCRIPTS_DEST.joinpath("run_britney").is_symlink():
+        SCRIPTS_DEST.joinpath("run_britney").symlink_to(runner_script)
 
 def install_systemd_units():
     logger.info("installing systemd units")
@@ -125,7 +127,9 @@ def create_directories():
         run_as_user(f"mkdir -p {directory}")
     logger.info("creating symlinks")
     for link, target in BRITNEY_SYMLINKS:
-        if not Path(link).exists():
+        # using Path.exists() can return false positives if the symlink exists but is broken
+        # so use Path.is_symlink() to check if the symlink exists instead
+        if not Path(link).is_symlink():
             # use run_as_user instead of Path.symlink_to
             # for appropriate permissions
             run_as_user(f"ln -s {target} {link}")
