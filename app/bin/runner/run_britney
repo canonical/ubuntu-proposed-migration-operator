@@ -186,7 +186,7 @@ make_hints_git () {
     return $ret
 }
 
-sanitise_hints_kernel () {
+sanitize_hints_kernel () {
   if ! [ -d "$2" ]; then
     echo "No general hints directory, ignoring." >&2
     return
@@ -201,56 +201,7 @@ sanitise_hints_kernel () {
   # also blocked by the release-team.  As part of this we "flatten" the
   # supplied blocks such that one appears per line which simplifies disabling
   # individual packages.
-  awk -v hints="$1" '
-    # Ensure we do not consume our own output when considering blocks.
-    (FILENAME ~ "/kernel-testing") { nextfile; }
-    /^[ 	]*block[ 	]/ {
-      for (n=2; n<=NF; n++) {
-        blocks[$n]=1
-      }
-    }
-    /^[ 	]*block-all[ 	][ 	]*source/ {
-      blocks["ALL"]=1
-    }
-    END {
-      for (block in blocks) {
-        print("# RT BLOCKS " block)
-      }
-      while (getline <hints > 0) {
-        # Blocks must only be linux packages and unversioned.
-        if (/^block[ 	]/) {
-          for (n=2; n<=NF; n++) {
-            if ($n ~ "/") {
-              print("# IGNORED(bad-form): block " $n)
-            } else if ($n == "linux" || $n ~ "^linux-") {
-              print("block " $n)
-            } else {
-              print("# IGNORED(bad-package): block " $n)
-            }
-          }
-        # Unblocks must only be linux packages, versioned, and not
-        # in the manual blocks list.
-        } else if (/^unblock[ 	]/) {
-          for (n=2; n<=NF; n++) {
-            split($n, bits, "/")
-            if ("ALL" in blocks || bits[1] in blocks) {
-              print("# IGNORED(manually-blocked): unblock " $n)
-            } else if ($n ~ "^linux/" || $n ~ "^linux-[^/]*/") {
-              print("unblock " $n)
-            } else {
-              print("# IGNORED(bad-package/form): unblock " $n)
-            }
-          }
-        # Comments and blank lines are ok.
-        } else if (/^#/ || /^$/) {
-          print($0)
-        # Anything else is invalid.
-        } else {
-          print("# IGNORED(invalid-directive): " $0)
-        }
-      }
-    }
-  ' "$2/"* >"$3.new"
+  "$SCRIPTS/sanitize_kernel_hints.py" --hints "$1" "$2/"* >"$3.new"
   mv -f "$3.new" "$3"
 }
 
@@ -268,7 +219,7 @@ if option hints_git; then
     # Kernel team kernel-release hints.
     kernel_hint_dir="$DATA_B2/$SERIES-proposed/Hints/kernel-testing-hints"
     make_hints_git "$kernel_hint_dir" "$kernel_git_repo" "$branch"
-    sanitise_hints_kernel "$kernel_hint_dir/release" "$DATA_B2/$SERIES-proposed/Hints" "$DATA_B2/$SERIES-proposed/Hints/kernel-testing"
+    sanitize_hints_kernel "$kernel_hint_dir/release" "$DATA_B2/$SERIES-proposed/Hints" "$DATA_B2/$SERIES-proposed/Hints/kernel-testing"
   fi
 fi
 
