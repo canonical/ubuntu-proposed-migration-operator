@@ -21,9 +21,9 @@ CODE_PATH = PROPOSED_MIGRATION_PATH / "code"
 PUBLIC_HTML_PATH = Path(f"~{USER}/public_html").expanduser()
 
 BRITNEY1_LOCATION = PROPOSED_MIGRATION_PATH / "code" / "b1"
-BRITNEY2_REPO = "https://git.launchpad.net/~ubuntu-release/britney/+git/britney2-ubuntu"
+BRITNEY2_REPO = "https://git.launchpad.net/~ural/britney/+git/britney2-ubuntu"
 BRITNEY2_LOCATION = PROPOSED_MIGRATION_PATH / "code" / "b2"
-BRITNEY2_BRANCH = "master"
+BRITNEY2_BRANCH = "autopkgtest-init-state-dir"
 
 SCRIPTS_DEST = Path("/usr/local/bin")
 
