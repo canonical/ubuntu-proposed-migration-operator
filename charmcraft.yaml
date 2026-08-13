@@ -9,6 +9,13 @@ platforms:
     build-on: [amd64]
     build-for: [amd64]
 
+config:
+  options:
+    amqp_password:
+      type: string
+      default: ""
+      description: The password used to authenticate with AMQP.
+
 parts:
   charm:
     plugin: charm

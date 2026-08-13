@@ -188,5 +188,11 @@ def install():
 def start():
     pass
 
-def configure():
-    pass
+def write_amqp_password(amqp_password: str):
+    logger.info("writing amqp password")
+    password_path = PROPOSED_MIGRATION_PATH / "amqp_password.txt"
+    with open(password_path, "w") as f:
+        f.write(amqp_password)
+
+def configure(amqp_password: str):
+    write_amqp_password(amqp_password)

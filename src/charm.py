@@ -32,16 +32,25 @@ class ProposedMigrationCharm(ops.CharmBase):
 
     def _on_start(self, event: ops.StartEvent):
         """Start the workload on the machine."""
+        if isinstance(self.unit.status, ops.BlockedStatus):
+            return
+
         proposed_migration.start()
         self.unit.status = ops.ActiveStatus()
 
     def _on_config_changed(self, event: ops.ConfigChangedEvent):
+        if not self.config["amqp_password"]:
+            self.unit.status = ops.BlockedStatus("amqp_password config option is not set")
+            return
+
         if not self._stored.installed:
             self.on.install.emit()
-        
+
         self.unit.status = ops.MaintenanceStatus("configuring service")
 
-        proposed_migration.configure()
+        proposed_migration.configure(
+            amqp_password=self.config["amqp_password"],
+        )
 
         self.on.start.emit()
 
