@@ -27,6 +27,14 @@ config:
       type: string
       default: autopkgtest-amqp.internal
       description: The URL of the AMQP server.
+    devel_release:
+      type: string
+      default: ""
+      description: The current development release series.
+    all_releases:
+      type: string
+      default: ""
+      description: The list of release series undergoing proposed migration.
 
 parts:
   charm:

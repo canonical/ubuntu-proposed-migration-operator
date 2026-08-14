@@ -53,6 +53,8 @@ class ProposedMigrationCharm(ops.CharmBase):
             swift_url=self.config["swift_url"],
             autopkgtest_url=self.config["autopkgtest_url"],
             amqp_url=self.config["amqp_url"],
+            devel_release=self.config["devel_release"],
+            all_releases=self.config["all_releases"],
         )
 
         self.on.start.emit()

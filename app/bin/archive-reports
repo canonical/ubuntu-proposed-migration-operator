@@ -1,6 +1,9 @@
 #! /bin/sh
 set -e
 
+# the DEVEL and PROPOSED_MIGRATION_SERIES variables are defined in releases.conf
+source /etc/proposed-migration/releases.conf
+
 LOCK=
 mtimes=
 cleanup () {
@@ -23,8 +26,6 @@ fi
 
 MIRROR="$HOME/mirror/ubuntu"
 OUT="$HOME/public_html"
-DEVEL=stonking
-PROPOSED_MIGRATION_SERIES="trusty xenial bionic focal jammy noble questing resolute stonking"
 
 mtimes="$(mktemp -d)"
 

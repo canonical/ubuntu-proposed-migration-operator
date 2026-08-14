@@ -26,6 +26,9 @@ BRITNEY2_LOCATION = PROPOSED_MIGRATION_PATH / "code" / "b2"
 BRITNEY2_BRANCH = "autopkgtest-init-state-dir"
 
 SCRIPTS_DEST = Path("/usr/local/bin")
+CONF_PATH = PROPOSED_MIGRATION_PATH / "conf"
+
+RELEASES_CONF_PATH = Path("/etc/proposed-migration")
 
 # britney expects a *bunch* of magic directories to be present
 BRITNEY_DIRS = [
@@ -194,10 +197,26 @@ def write_amqp_password(amqp_password: str):
     with open(password_path, "w") as f:
         f.write(amqp_password)
 
+def write_releases_conf(devel_release: str, all_releases: str):
+    logger.info("writing releases configuration")
+    j2env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(CONF_PATH),
+        autoescape=jinja2.select_autoescape(),
+    )
+    template = j2env.get_template("releases.conf.j2")
+    j2context = {
+        "devel_release": devel_release,
+        "all_releases": all_releases,
+    }
+    RELEASES_CONF_PATH.mkdir(parents=True, exist_ok=True)
+    releases_conf_path = RELEASES_CONF_PATH / "releases.conf"
+    with open(releases_conf_path, "w") as f:
+        f.write(template.render(j2context))
+
 def write_britney_conf(swift_url: str, autopkgtest_url: str, amqp_url: str):
     logger.info("writing britney configuration")
     j2env = jinja2.Environment(
-        loader=jinja2.FileSystemLoader(CHARM_APP_DATA / "conf"),
+        loader=jinja2.FileSystemLoader(CONF_PATH),
         autoescape=jinja2.select_autoescape(),
     )
     template = j2env.get_template("britney.conf.j2")
@@ -210,6 +229,7 @@ def write_britney_conf(swift_url: str, autopkgtest_url: str, amqp_url: str):
     with open(britney_conf_path, "w") as f:
         f.write(template.render(j2context))
 
-def configure(amqp_password: str, swift_url: str, autopkgtest_url: str, amqp_url: str):
+def configure(amqp_password: str, swift_url: str, autopkgtest_url: str, amqp_url: str, devel_release: str, all_releases: str):
     write_amqp_password(amqp_password)
+    write_releases_conf(devel_release, all_releases)
     write_britney_conf(swift_url, autopkgtest_url, amqp_url)
