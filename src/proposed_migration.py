@@ -58,6 +58,15 @@ CHARM_SOURCE_PATH = Path(__file__).parent.parent
 CHARM_APP_DATA = CHARM_SOURCE_PATH / "app"
 
 
+def render_template(template_path: Path, template_vars: dict, destination: Path):
+    j2env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(template_path.parent),
+        autoescape=jinja2.select_autoescape(),
+    )
+    template = j2env.get_template(template_path.name)
+    with open(destination, "w") as f:
+        f.write(template.render(template_vars))
+
 def run_as_user(command: str):
     subprocess.run(
         [
@@ -97,19 +106,14 @@ def install_systemd_units():
     units_to_enable = [u.name for u in (units_path).glob("*.timer")]
 
     system_units_dir = Path("/etc/systemd/system/")
-    j2env = jinja2.Environment(
-        loader=jinja2.FileSystemLoader(units_path),
-        autoescape=jinja2.select_autoescape(),
-    )
-    j2context = {
-        "user": USER,
-    }
     for unit in units_to_install:
         if unit.endswith(".j2"):
             unit_basename = unit.removesuffix(".j2")
-            j2template = j2env.get_template(unit)
-            with open(system_units_dir / unit_basename, "w") as f:
-                f.write(j2template.render(j2context))
+            render_template(
+                units_path / unit,
+                {"user": USER},
+                system_units_dir / unit_basename,
+            )
         else:
             shutil.copy(units_path / unit, system_units_dir)
 
@@ -199,35 +203,27 @@ def write_amqp_password(amqp_password: str):
 
 def write_releases_conf(devel_release: str, all_releases: str):
     logger.info("writing releases configuration")
-    j2env = jinja2.Environment(
-        loader=jinja2.FileSystemLoader(CONF_PATH),
-        autoescape=jinja2.select_autoescape(),
-    )
-    template = j2env.get_template("releases.conf.j2")
-    j2context = {
-        "devel_release": devel_release,
-        "all_releases": all_releases,
-    }
     RELEASES_CONF_PATH.mkdir(parents=True, exist_ok=True)
-    releases_conf_path = RELEASES_CONF_PATH / "releases.conf"
-    with open(releases_conf_path, "w") as f:
-        f.write(template.render(j2context))
+    render_template(
+        CONF_PATH / "releases.conf.j2",
+        {
+            "devel_release": devel_release,
+            "all_releases": all_releases,
+        },
+        RELEASES_CONF_PATH / "releases.conf",
+    )
 
 def write_britney_conf(swift_url: str, autopkgtest_url: str, amqp_url: str):
     logger.info("writing britney configuration")
-    j2env = jinja2.Environment(
-        loader=jinja2.FileSystemLoader(CONF_PATH),
-        autoescape=jinja2.select_autoescape(),
+    render_template(
+        CONF_PATH / "britney.conf.j2",
+        {
+            "swift_url": swift_url,
+            "autopkgtest_url": autopkgtest_url,
+            "amqp_url": amqp_url,
+        },
+        BRITNEY2_LOCATION / "britney.conf",
     )
-    template = j2env.get_template("britney.conf.j2")
-    j2context = {
-        "swift_url": swift_url,
-        "autopkgtest_url": autopkgtest_url,
-        "amqp_url": amqp_url,
-    }
-    britney_conf_path = BRITNEY2_LOCATION / "britney.conf"
-    with open(britney_conf_path, "w") as f:
-        f.write(template.render(j2context))
 
 def configure(amqp_password: str, swift_url: str, autopkgtest_url: str, amqp_url: str, devel_release: str, all_releases: str):
     write_amqp_password(amqp_password)
