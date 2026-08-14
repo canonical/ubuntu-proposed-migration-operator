@@ -15,6 +15,18 @@ config:
       type: string
       default: ""
       description: The password used to authenticate with AMQP.
+    swift_url:
+      type: string
+      default: https://radosgw.ps7.canonical.com/swift/v1/AUTH_fba5670a395d47719d4d19bb585dcab6/
+      description: The Swift base URL with the autopkgtest results.
+    autopkgtest_url:
+      type: string
+      default: https://autopkgtest.ubuntu.com
+      description: The base URL for the autopkgtest site.
+    amqp_url:
+      type: string
+      default: autopkgtest-amqp.internal
+      description: The URL of the AMQP server.
 
 parts:
   charm:

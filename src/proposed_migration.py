@@ -194,5 +194,22 @@ def write_amqp_password(amqp_password: str):
     with open(password_path, "w") as f:
         f.write(amqp_password)
 
-def configure(amqp_password: str):
+def write_britney_conf(swift_url: str, autopkgtest_url: str, amqp_url: str):
+    logger.info("writing britney configuration")
+    j2env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(CHARM_APP_DATA / "conf"),
+        autoescape=jinja2.select_autoescape(),
+    )
+    template = j2env.get_template("britney.conf.j2")
+    j2context = {
+        "swift_url": swift_url,
+        "autopkgtest_url": autopkgtest_url,
+        "amqp_url": amqp_url,
+    }
+    britney_conf_path = BRITNEY2_LOCATION / "britney.conf"
+    with open(britney_conf_path, "w") as f:
+        f.write(template.render(j2context))
+
+def configure(amqp_password: str, swift_url: str, autopkgtest_url: str, amqp_url: str):
     write_amqp_password(amqp_password)
+    write_britney_conf(swift_url, autopkgtest_url, amqp_url)

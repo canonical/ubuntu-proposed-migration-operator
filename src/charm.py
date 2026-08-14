@@ -50,6 +50,9 @@ class ProposedMigrationCharm(ops.CharmBase):
 
         proposed_migration.configure(
             amqp_password=self.config["amqp_password"],
+            swift_url=self.config["swift_url"],
+            autopkgtest_url=self.config["autopkgtest_url"],
+            amqp_url=self.config["amqp_url"],
         )
 
         self.on.start.emit()
