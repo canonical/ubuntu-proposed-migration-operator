@@ -43,6 +43,25 @@ class ProposedMigrationCharm(ops.CharmBase):
             self.unit.status = ops.BlockedStatus("amqp_password config option is not set")
             return
 
+        secret_id = self.config.get("launchpad_credentials")
+        if not secret_id:
+            self.unit.status = ops.BlockedStatus("launchpad_credentials config option is not set")
+            return
+
+        try:
+            secret = self.model.get_secret(id=secret_id)
+            launchpad_credentials = secret.get_content()["credentials"]
+        except ops.SecretNotFoundError:
+            self.unit.status = ops.BlockedStatus(
+                "launchpad_credentials secret not found; grant it to this application"
+            )
+            return
+        except KeyError:
+            self.unit.status = ops.BlockedStatus(
+                "launchpad_credentials secret must contain a 'credentials' field"
+            )
+            return
+
         if not self._stored.installed:
             self.on.install.emit()
 
@@ -55,6 +74,7 @@ class ProposedMigrationCharm(ops.CharmBase):
             amqp_url=self.config["amqp_url"],
             devel_release=self.config["devel_release"],
             all_releases=self.config["all_releases"],
+            launchpad_credentials=launchpad_credentials,
         )
 
         self.on.start.emit()

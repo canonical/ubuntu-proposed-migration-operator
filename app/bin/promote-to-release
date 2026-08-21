@@ -150,7 +150,8 @@ def main():
                      options.pocket)
 
     options.launchpad = Launchpad.login_with(
-        "promote-to-release", options.launchpad_instance, version="devel")
+        "promote-to-release", options.launchpad_instance, version="devel",
+        credentials_file="/etc/proposed-migration/launchpad-credentials.txt")
     lputils.setup_location(options)
     options.dases = {}
     for das in options.series.architectures:

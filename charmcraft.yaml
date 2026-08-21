@@ -35,6 +35,13 @@ config:
       type: string
       default: ""
       description: The list of release series undergoing proposed migration.
+    launchpad_credentials:
+      type: secret
+      description: >-
+        A Juju user secret containing the launchpadlib credentials used to
+        authenticate with Launchpad. The secret must contain a single field
+        named "credentials" whose value is the full contents of a launchpadlib
+        credentials file (the versioned INI format produced by launchpadlib).
 
 parts:
   charm:

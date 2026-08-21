@@ -26,9 +26,10 @@ BRITNEY2_LOCATION = PROPOSED_MIGRATION_PATH / "code" / "b2"
 BRITNEY2_BRANCH = "autopkgtest-init-state-dir"
 
 SCRIPTS_DEST = Path("/usr/local/bin")
-CONF_PATH = PROPOSED_MIGRATION_PATH / "conf"
 
-RELEASES_CONF_PATH = Path("/etc/proposed-migration")
+CHARM_CONF_PATH = Path("/etc/proposed-migration")
+
+LP_CREDENTIALS_PATH = CHARM_CONF_PATH / "launchpad-credentials.txt"
 
 # britney expects a *bunch* of magic directories to be present
 BRITNEY_DIRS = [
@@ -56,6 +57,7 @@ DEB_DEPENDENCIES = [
 
 CHARM_SOURCE_PATH = Path(__file__).parent.parent
 CHARM_APP_DATA = CHARM_SOURCE_PATH / "app"
+CONF_PATH = CHARM_APP_DATA / "conf"
 
 
 def render_template(template_path: Path, template_vars: dict, destination: Path):
@@ -203,14 +205,14 @@ def write_amqp_password(amqp_password: str):
 
 def write_releases_conf(devel_release: str, all_releases: str):
     logger.info("writing releases configuration")
-    RELEASES_CONF_PATH.mkdir(parents=True, exist_ok=True)
+    CHARM_CONF_PATH.mkdir(parents=True, exist_ok=True)
     render_template(
         CONF_PATH / "releases.conf.j2",
         {
             "devel_release": devel_release,
             "all_releases": all_releases,
         },
-        RELEASES_CONF_PATH / "releases.conf",
+        CHARM_CONF_PATH / "releases.conf",
     )
 
 def write_britney_conf(swift_url: str, autopkgtest_url: str, amqp_url: str):
@@ -225,7 +227,14 @@ def write_britney_conf(swift_url: str, autopkgtest_url: str, amqp_url: str):
         BRITNEY2_LOCATION / "britney.conf",
     )
 
-def configure(amqp_password: str, swift_url: str, autopkgtest_url: str, amqp_url: str, devel_release: str, all_releases: str):
+def write_launchpad_credentials(launchpad_credentials: str):
+    logger.info("writing launchpad credentials")
+    LP_CREDENTIALS_PATH.write_text(launchpad_credentials)
+    LP_CREDENTIALS_PATH.chmod(0o600)
+    shutil.chown(LP_CREDENTIALS_PATH, user=USER, group=USER)
+
+def configure(amqp_password: str, swift_url: str, autopkgtest_url: str, amqp_url: str, devel_release: str, all_releases: str, launchpad_credentials: str):
     write_amqp_password(amqp_password)
+    write_launchpad_credentials(launchpad_credentials)
     write_releases_conf(devel_release, all_releases)
     write_britney_conf(swift_url, autopkgtest_url, amqp_url)
